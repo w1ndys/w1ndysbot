@@ -1,37 +1,41 @@
 # AGENTS.md
 
-## NapCat WebSocket 响应处理约定
+## Project Shape
 
-本项目通过 WebSocket 长连接与 NapCat 通信。发送请求后，调用方无法像普通 HTTP 调用一样同步拿到该请求的响应结果；NapCat 的响应会作为后续 WebSocket 消息异步返回。
+- This is a Python 3.12 `uv` project; trust `.python-version`, `pyproject.toml`, and `uv.lock` over the README Python range.
+- Run app commands from `app/` so absolute imports like `from config import ...`, `from core.switchs import ...`, and `from modules.X import ...` resolve correctly.
+- Runtime entrypoint is `app/main.py`; it requires a root `.env` with `OWNER_ID` and `WS_URL`, while `TOKEN`, `FEISHU_BOT_URL`, and `FEISHU_BOT_SECRET` are optional.
+- Main long-running command is `uv run python app/main.py` from repo root, or `uv run python main.py` from `app/`.
 
-因此，所有依赖 NapCat 响应数据的功能设计都必须遵循以下约定：
+## Verification
 
-- 在发送请求时，通过 `echo` 添加可识别的特殊标记。
-- 特殊标记应包含模块名、功能名和必要的业务关联 ID，避免与其他模块或请求冲突。
-- 在模块的 `ResponseHandler` 中解析 `echo`，只处理属于当前模块和当前功能的响应。
-- 需要从响应中读取的数据，例如 `data.message_id`，必须在 `ResponseHandler` 中捕获。
-- 如果后续流程依赖响应数据，应使用模块级状态表、持久化记录或等价机制保存请求标记与业务上下文的映射。
-- 不要假设 `send_group_msg`、`send_private_msg`、`get_msg` 等 API 调用会同步返回 NapCat 响应结果。
+- There is no repo-wide pytest/lint/typecheck config at present; do not invent a standard test suite.
+- Use `uv run python -m compileall app` as the safest broad syntax/import-adjacent check after Python edits.
+- `app/modules/FAQSystem/test_FAQSystem.py` is an interactive script, not an automated pytest test.
 
-推荐 echo 格式：
+## Module Loading
 
-```text
-<action>-<module>_<feature>=<request_id>
-```
+- `app/handle_events.py` dynamically loads every `app/modules/*/main.py` directory that is not prefixed with `_` and whose `__init__.py` has `MODULE_ENABLED=True` or omits it.
+- A module is considered loadable only if `main.py` exposes async `handle_events(websocket, msg)`.
+- `app/modules/Template/` is the canonical module skeleton: `__init__.py` defines `MODULE_NAME`, `MODULE_ENABLED`, `SWITCH_NAME`, `MODULE_DESCRIPTION`, `DATA_DIR`, and `COMMANDS`; `main.py` dispatches to handler classes by NapCat event type.
+- Keep using `core.switchs` for module switch imports; it is a compatibility facade over the newer `core/switch/` package and is what existing modules use.
 
-示例：
+## Message Flow
 
-```text
-send_group_msg-qfnukjs_empty_classroom_pending=abc123
-```
+- `app/bot.py` connects to NapCat via WebSocket and schedules `EventHandler.handle_message` with `asyncio.create_task`; each registered handler is also run as its own background task.
+- Module handlers must not assume ordering or synchronous completion across handlers because events are fanned out concurrently.
+- Group modules typically handle the switch command before the menu command, then return early unless `is_group_switch_on(group_id, MODULE_NAME)` is true.
+- Menu commands conventionally use `SWITCH_NAME + MENU_COMMAND` and `MenuManager.get_module_commands_text(MODULE_NAME)`.
 
-对应处理方式：
+## NapCat Responses
 
-```python
-marker = "send_group_msg-qfnukjs_empty_classroom_pending="
-if echo.startswith(marker):
-    request_id = echo[len(marker):]
-    message_id = data.get("message_id")
-```
+- NapCat API calls such as `send_group_msg`, `send_private_msg`, and `get_msg` do not synchronously return usable response data; their responses arrive later as WebSocket messages.
+- Any feature depending on response data must send a unique `echo` marker containing module, feature, and business request ID, for example `send_group_msg-qfnukjs_empty_classroom_pending=<id>`.
+- Parse that marker only in the module's `ResponseHandler`, read data such as `data.message_id` there, and store request context in module state or persistence.
+- Design these flows for response-before-work-completes, work-before-response, missing response, and failed response cases.
 
-设计异步响应流程时，应同时考虑响应先于业务完成、业务先于响应完成、响应缺失或响应失败等情况。
+## Data And Config
+
+- Runtime data and logs are intentionally ignored by git: `data/`, `logs/`, `.env`, `.venv`, and caches should not be committed.
+- Some modules load their own `.env` from the module directory, for example `app/modules/qfnukjs/.env` and `app/modules/SentimentAnalysis/.env`; check the module README or `.env.example` before changing config behavior.
+- Module `DATA_DIR` values usually point under repo-root `data/<MODULE_NAME>` and may be created at import time.
