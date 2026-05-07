@@ -115,36 +115,103 @@ class GroupMessageHandler:
 
         return self._format_query_result(data)
 
-    def _format_json_string(self, text):
+    def _try_parse_json_string(self, text):
         text = text.strip()
         if not text:
-            return "空教室查询结果为空。"
+            return ""
 
         try:
-            data = json.loads(text)
+            return json.loads(text)
         except json.JSONDecodeError:
             return text
 
-        if isinstance(data, (dict, list)):
+    def _normalize_json_value(self, value):
+        if isinstance(value, str):
+            parsed = self._try_parse_json_string(value)
+            if parsed == value:
+                return value.strip()
+            return self._normalize_json_value(parsed)
+
+        if isinstance(value, list):
+            return [self._normalize_json_value(item) for item in value]
+
+        if isinstance(value, dict):
+            return {
+                key: self._normalize_json_value(item)
+                for key, item in value.items()
+            }
+
+        return value
+
+    def _format_json_value(self, value):
+        value = self._normalize_json_value(value)
+        if value in (None, "", [], {}):
+            return "空教室查询结果为空。"
+        if isinstance(value, dict) and "classrooms" in value:
+            return self._format_empty_classroom_result(value)
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, indent=2)
+        return str(value).strip() or "空教室查询结果为空。"
+
+    def _format_empty_classroom_result(self, data):
+        classrooms = data.get("classrooms")
+        if not isinstance(classrooms, list):
             return json.dumps(data, ensure_ascii=False, indent=2)
-        return str(data).strip() or "空教室查询结果为空。"
+
+        date = data.get("date")
+        week = data.get("week")
+        day_of_week = data.get("day_of_week")
+        weekday_text = self._format_weekday(day_of_week)
+
+        lines = ["空教室查询结果"]
+        meta_parts = []
+        if date:
+            meta_parts.append(f"日期：{date}")
+        if week:
+            meta_parts.append(f"第 {week} 周")
+        if weekday_text:
+            meta_parts.append(weekday_text)
+        if meta_parts:
+            lines.append("，".join(meta_parts))
+
+        if not classrooms:
+            lines.append("未查询到空教室信息。")
+            return "\n".join(lines)
+
+        classroom_text = "、".join(str(classroom) for classroom in classrooms)
+        lines.append(f"空教室（{len(classrooms)} 间）：{classroom_text}")
+        return "\n".join(lines)
+
+    def _format_weekday(self, day_of_week):
+        weekdays = {
+            1: "周一",
+            2: "周二",
+            3: "周三",
+            4: "周四",
+            5: "周五",
+            6: "周六",
+            7: "周日",
+        }
+        try:
+            return weekdays.get(int(day_of_week), "")
+        except (TypeError, ValueError):
+            return ""
+
+    def _format_json_string(self, text):
+        return self._format_json_value(text)
 
     def _format_query_result(self, data):
         if isinstance(data, dict):
             for key in ("message", "result", "data", "answer", "text"):
                 value = data.get(key)
-                if isinstance(value, (dict, list)) and value:
-                    return json.dumps(value, ensure_ascii=False, indent=2)
-                if isinstance(value, str) and value.strip():
-                    return self._format_json_string(value)
-            return json.dumps(data, ensure_ascii=False, indent=2)
+                if value not in (None, "", [], {}):
+                    return self._format_json_value(value)
+            return self._format_json_value(data)
 
         if isinstance(data, list):
-            if not data:
-                return "未查询到空教室信息。"
-            return json.dumps(data, ensure_ascii=False, indent=2)
+            return self._format_json_value(data) if data else "未查询到空教室信息。"
 
-        return str(data).strip() or "空教室查询结果为空。"
+        return self._format_json_value(data)
 
     async def _send_pending_message(self):
         pending_id = uuid.uuid4().hex
