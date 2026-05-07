@@ -31,6 +31,14 @@ Agent 在任务执行过程中发现的条目应遵循以下格式：
 
 ## 条目
 
+[NapCat WebSocket 响应 echo 捕获约定]
+- Date: 2026-05-07
+- Context: 用户要求将 echo 处理逻辑固化到根目录 AGENTS.md
+- Instructions:
+  - WebSocket 长连接无法实时获取请求响应；对于依赖 NapCat 响应的功能设计，需要在请求 `echo` 中添加模块化特殊标记。
+  - 模块的 `ResponseHandler` 应根据特殊 `echo` 标记捕获对应响应，并从响应 `data` 中读取需要的字段，例如 `message_id`。
+  - 依赖响应结果的异步流程应使用本地状态表或等价机制关联请求标记和后续处理，避免假设发送 API 会同步返回结果。
+
 [模块动态加载与模块模板约定]
 - Date: 2026-05-06
 - Context: Agent 在执行新增 qfnukjs 空教室查询模块任务时发现

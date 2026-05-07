@@ -1,12 +1,13 @@
 import json
 import os
+import uuid
 from datetime import datetime
 
 import aiohttp
 from dotenv import load_dotenv
 
 from .. import MODULE_NAME, SWITCH_NAME
-from api.message import send_group_msg
+from api.message import delete_msg, send_group_msg
 from core.menu_manager import MENU_COMMAND, MenuManager
 from core.switchs import handle_module_group_switch, is_group_switch_on
 from logger import logger
@@ -21,6 +22,8 @@ BASE_URL = os.getenv("QFNUKJS_BASE_URL", "https://kjs.easy-qfnu.top").rstrip("/"
 API_KEY = os.getenv("QFNUKJS_API_KEY", "")
 QUERY_TIMEOUT_SECONDS = 30
 TRIGGER_KEYWORD = "空教室"
+PENDING_NOTE_PREFIX = f"{MODULE_NAME}_empty_classroom_pending"
+PENDING_MESSAGES = {}
 
 
 class GroupMessageHandler:
@@ -108,18 +111,32 @@ class GroupMessageHandler:
                 try:
                     data = json.loads(response_text)
                 except json.JSONDecodeError:
-                    return response_text.strip() or "空教室查询结果为空。"
+                    return self._format_json_string(response_text)
 
         return self._format_query_result(data)
+
+    def _format_json_string(self, text):
+        text = text.strip()
+        if not text:
+            return "空教室查询结果为空。"
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return text
+
+        if isinstance(data, (dict, list)):
+            return json.dumps(data, ensure_ascii=False, indent=2)
+        return str(data).strip() or "空教室查询结果为空。"
 
     def _format_query_result(self, data):
         if isinstance(data, dict):
             for key in ("message", "result", "data", "answer", "text"):
                 value = data.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
                 if isinstance(value, (dict, list)) and value:
                     return json.dumps(value, ensure_ascii=False, indent=2)
+                if isinstance(value, str) and value.strip():
+                    return self._format_json_string(value)
             return json.dumps(data, ensure_ascii=False, indent=2)
 
         if isinstance(data, list):
@@ -129,6 +146,33 @@ class GroupMessageHandler:
 
         return str(data).strip() or "空教室查询结果为空。"
 
+    async def _send_pending_message(self):
+        pending_id = uuid.uuid4().hex
+        PENDING_MESSAGES[pending_id] = {"message_id": None, "done": False}
+        await send_group_msg(
+            self.websocket,
+            self.group_id,
+            [
+                generate_reply_message(self.message_id),
+                generate_text_message("空教室查询处理中，请稍候..."),
+            ],
+            note=f"{PENDING_NOTE_PREFIX}={pending_id}",
+        )
+        return pending_id
+
+    async def _finish_pending_message(self, pending_id):
+        pending = PENDING_MESSAGES.get(pending_id)
+        if not pending:
+            return
+
+        pending["done"] = True
+        message_id = pending.get("message_id")
+        if not message_id:
+            return
+
+        await delete_msg(self.websocket, message_id)
+        PENDING_MESSAGES.pop(pending_id, None)
+
     async def _handle_empty_classroom_query(self):
         if not self._is_text_only_message():
             return False
@@ -137,15 +181,19 @@ class GroupMessageHandler:
         if TRIGGER_KEYWORD not in query_text:
             return False
 
-        result_text = await self._query_empty_classroom(query_text)
-        await send_group_msg(
-            self.websocket,
-            self.group_id,
-            [
-                generate_reply_message(self.message_id),
-                generate_text_message(result_text),
-            ],
-        )
+        pending_id = await self._send_pending_message()
+        try:
+            result_text = await self._query_empty_classroom(query_text)
+            await send_group_msg(
+                self.websocket,
+                self.group_id,
+                [
+                    generate_reply_message(self.message_id),
+                    generate_text_message(result_text),
+                ],
+            )
+        finally:
+            await self._finish_pending_message(pending_id)
         logger.info(
             f"[{MODULE_NAME}]群{self.group_id}用户{self.user_id}查询空教室: {query_text}"
         )
