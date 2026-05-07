@@ -115,36 +115,57 @@ class GroupMessageHandler:
 
         return self._format_query_result(data)
 
-    def _format_json_string(self, text):
+    def _try_parse_json_string(self, text):
         text = text.strip()
         if not text:
-            return "空教室查询结果为空。"
+            return ""
 
         try:
-            data = json.loads(text)
+            return json.loads(text)
         except json.JSONDecodeError:
             return text
 
-        if isinstance(data, (dict, list)):
-            return json.dumps(data, ensure_ascii=False, indent=2)
-        return str(data).strip() or "空教室查询结果为空。"
+    def _normalize_json_value(self, value):
+        if isinstance(value, str):
+            parsed = self._try_parse_json_string(value)
+            if parsed == value:
+                return value.strip()
+            return self._normalize_json_value(parsed)
+
+        if isinstance(value, list):
+            return [self._normalize_json_value(item) for item in value]
+
+        if isinstance(value, dict):
+            return {
+                key: self._normalize_json_value(item)
+                for key, item in value.items()
+            }
+
+        return value
+
+    def _format_json_value(self, value):
+        value = self._normalize_json_value(value)
+        if value in (None, "", [], {}):
+            return "空教室查询结果为空。"
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, indent=2)
+        return str(value).strip() or "空教室查询结果为空。"
+
+    def _format_json_string(self, text):
+        return self._format_json_value(text)
 
     def _format_query_result(self, data):
         if isinstance(data, dict):
             for key in ("message", "result", "data", "answer", "text"):
                 value = data.get(key)
-                if isinstance(value, (dict, list)) and value:
-                    return json.dumps(value, ensure_ascii=False, indent=2)
-                if isinstance(value, str) and value.strip():
-                    return self._format_json_string(value)
-            return json.dumps(data, ensure_ascii=False, indent=2)
+                if value not in (None, "", [], {}):
+                    return self._format_json_value(value)
+            return self._format_json_value(data)
 
         if isinstance(data, list):
-            if not data:
-                return "未查询到空教室信息。"
-            return json.dumps(data, ensure_ascii=False, indent=2)
+            return self._format_json_value(data) if data else "未查询到空教室信息。"
 
-        return str(data).strip() or "空教室查询结果为空。"
+        return self._format_json_value(data)
 
     async def _send_pending_message(self):
         pending_id = uuid.uuid4().hex
