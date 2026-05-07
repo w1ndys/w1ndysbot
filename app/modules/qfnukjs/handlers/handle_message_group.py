@@ -147,9 +147,55 @@ class GroupMessageHandler:
         value = self._normalize_json_value(value)
         if value in (None, "", [], {}):
             return "空教室查询结果为空。"
+        if isinstance(value, dict) and "classrooms" in value:
+            return self._format_empty_classroom_result(value)
         if isinstance(value, (dict, list)):
             return json.dumps(value, ensure_ascii=False, indent=2)
         return str(value).strip() or "空教室查询结果为空。"
+
+    def _format_empty_classroom_result(self, data):
+        classrooms = data.get("classrooms")
+        if not isinstance(classrooms, list):
+            return json.dumps(data, ensure_ascii=False, indent=2)
+
+        date = data.get("date")
+        week = data.get("week")
+        day_of_week = data.get("day_of_week")
+        weekday_text = self._format_weekday(day_of_week)
+
+        lines = ["空教室查询结果"]
+        meta_parts = []
+        if date:
+            meta_parts.append(f"日期：{date}")
+        if week:
+            meta_parts.append(f"第 {week} 周")
+        if weekday_text:
+            meta_parts.append(weekday_text)
+        if meta_parts:
+            lines.append("，".join(meta_parts))
+
+        if not classrooms:
+            lines.append("未查询到空教室信息。")
+            return "\n".join(lines)
+
+        classroom_text = "、".join(str(classroom) for classroom in classrooms)
+        lines.append(f"空教室（{len(classrooms)} 间）：{classroom_text}")
+        return "\n".join(lines)
+
+    def _format_weekday(self, day_of_week):
+        weekdays = {
+            1: "周一",
+            2: "周二",
+            3: "周三",
+            4: "周四",
+            5: "周五",
+            6: "周六",
+            7: "周日",
+        }
+        try:
+            return weekdays.get(int(day_of_week), "")
+        except (TypeError, ValueError):
+            return ""
 
     def _format_json_string(self, text):
         return self._format_json_value(text)
