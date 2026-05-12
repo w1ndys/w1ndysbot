@@ -1,7 +1,7 @@
 import asyncio
 import re
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 
 import aiohttp
@@ -35,6 +35,26 @@ class SubmitResult:
     challenge_id: int
     status: str
     message: str
+
+
+@dataclass
+class ArenaSolve:
+    """擂台赛单题通过记录。"""
+
+    name: str
+    category: str = ""
+    score: str = ""
+    solved_at: str = ""
+
+
+@dataclass
+class TeamArenaSnapshot:
+    """某个 team 在擂台赛页面上的快照，用于监控对比。"""
+
+    team_id: str
+    team_name: str = ""
+    total_score: str = ""
+    solves: list[ArenaSolve] = field(default_factory=list)
 
 
 class ISCCClientError(Exception):
@@ -110,6 +130,63 @@ class ISCCClient:
                 raise ISCCClientError("获取队伍信息失败")
             await self._request_text("GET", f"/teamarena/{team_id}", referer=f"{self.base_url}/team/{team_id}")
             return team_id
+
+    async def fetch_team_arena_snapshot(self, team_id: str) -> TeamArenaSnapshot:
+        """拉取指定 team 的擂台赛页面并解析，供监控模块对比使用。
+
+        仅做只读访问：不依赖当前登录账号是否为该 team 的成员。
+        """
+        if not team_id:
+            raise ISCCClientError("team_id 为空")
+
+        async with self._operation_session():
+            html = await self._request_text(
+                "GET",
+                f"/teamarena/{team_id}",
+                referer=f"{self.base_url}/arenascoreboard",
+            )
+            return self._parse_team_arena(team_id, html)
+
+    def _parse_team_arena(self, team_id: str, html: str) -> TeamArenaSnapshot:
+        soup = BeautifulSoup(html, "html.parser")
+        snapshot = TeamArenaSnapshot(team_id=team_id)
+
+        team_node = soup.find(id="team-id")
+        if team_node and team_node.get_text(strip=True):
+            snapshot.team_name = team_node.get_text(strip=True)
+
+        score_node = soup.find(
+            lambda tag: tag.name == "h3"
+            and "总积分" in tag.get_text(strip=True)
+        )
+        if score_node:
+            snapshot.total_score = score_node.get_text(strip=True)
+
+        table = self._find_arena_solve_table(soup)
+        if table is None:
+            return snapshot
+
+        tbody = table.find("tbody")
+        rows = tbody.find_all("tr") if tbody else table.find_all("tr")
+        for tr in rows:
+            cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+            if len(cells) < 4:
+                continue
+            name, category, score, solved_at = cells[0], cells[1], cells[2], cells[3]
+            if not name:
+                continue
+            snapshot.solves.append(
+                ArenaSolve(name=name, category=category, score=score, solved_at=solved_at)
+            )
+        return snapshot
+
+    def _find_arena_solve_table(self, soup: BeautifulSoup):
+        """从 /teamarena/<id> 页面找到擂台解题详情表。"""
+        for table in soup.find_all("table"):
+            header_text = table.get_text(" ", strip=True)
+            if "擂台名称" in header_text and "通过时间" in header_text:
+                return table
+        return None
 
     async def submit_flag_to_unsolved(self, flag: str) -> list[SubmitResult]:
         async with self._operation_session():

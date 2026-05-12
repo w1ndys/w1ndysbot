@@ -4,12 +4,16 @@ import os
 MODULE_NAME = "ISCCSubmit"
 MODULE_ENABLED = True
 SWITCH_NAME = "iscc"
-MODULE_DESCRIPTION = "ISCC 平台自动提交 flag 模块，支持私聊配置账号和并发提交未解题目"
+MODULE_DESCRIPTION = (
+    "ISCC 平台自动提交 flag 模块，同时支持擂台赛提交监控（按心跳轮询指定 team_id，新提交通知管理员）"
+)
 
 DATA_DIR = os.path.join("data", MODULE_NAME)
 os.makedirs(DATA_DIR, exist_ok=True)
 
 BASE_URL = "https://iscc.isclab.org.cn"
+
+# ---------- 自动提交相关 ----------
 CONFIG_COMMAND = "iscc配置"
 HELP_COMMAND = "iscc帮助"
 SESSION_COMMAND = "isccsession"
@@ -20,11 +24,22 @@ FLAG_PATTERN = r"^ISCC\{.+\}$"
 DAILY_REFRESH_HOUR = 7
 DAILY_REFRESH_MINUTE = 50
 
+# ---------- 擂台赛监控相关 ----------
+# 所有监控命令统一以 isccm 开头，和模块主开关 iscc 保持同一前缀
+MONITOR_ADD_COMMAND = "isccm添加"
+MONITOR_REMOVE_COMMAND = "isccm删除"
+MONITOR_LIST_COMMAND = "isccm列表"
+MONITOR_CHECK_COMMAND = "isccm检测"
+
 COMMANDS = {
-    SWITCH_NAME: "系统管理员开关 ISCC 自动提交模块",
+    SWITCH_NAME: "系统管理员开关 ISCC 自动提交与擂台赛监控模块",
     CONFIG_COMMAND: "配置 ISCC 账号，用法：iscc配置 <账号> <密码>",
     "ISCC{xxxxx}": "提交 flag 到 ISCC 平台未解题目",
     SESSION_COMMAND: "查询当前 ISCC session",
     NONCE_COMMAND: "查询当前 ISCC 练武题和擂台题 nonce",
-    HELP_COMMAND: "查看 ISCC 自动提交帮助",
+    MONITOR_ADD_COMMAND: "添加监控的擂台赛 team id，用法：isccm添加 <team_id> [备注]",
+    MONITOR_REMOVE_COMMAND: "删除监控的擂台赛 team id，用法：isccm删除 <team_id>",
+    MONITOR_LIST_COMMAND: "查看当前监控的擂台赛 team id 列表",
+    MONITOR_CHECK_COMMAND: "立即手动触发一次擂台赛监控轮询",
+    HELP_COMMAND: "查看 ISCC 自动提交与擂台赛监控帮助",
 }

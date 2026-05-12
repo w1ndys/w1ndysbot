@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from datetime import datetime
+from typing import Optional
 
 from .. import MODULE_NAME
 
@@ -44,6 +45,36 @@ class DataManager:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        # 擂台赛监控：被监控的 team_id 列表
+        # baseline_ready_at 用于标记"首次抓取已完成"，避免首次监控把历史通过全量通知
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS iscc_monitor_target (
+                team_id TEXT PRIMARY KEY,
+                remark TEXT NOT NULL DEFAULT '',
+                team_name TEXT NOT NULL DEFAULT '',
+                total_score TEXT NOT NULL DEFAULT '',
+                baseline_ready_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        # 擂台赛监控：已知通过记录，(team_id, challenge_name) 唯一
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS iscc_monitor_submit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                team_id TEXT NOT NULL,
+                challenge_name TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT '',
+                score TEXT NOT NULL DEFAULT '',
+                solved_at TEXT NOT NULL DEFAULT '',
+                recorded_at TEXT NOT NULL,
+                UNIQUE(team_id, challenge_name)
             )
             """
         )
@@ -161,4 +192,131 @@ class DataManager:
                           updated_at = excluded.updated_at
             """,
             (key, value, self._now_text()),
+        )
+
+    # ==================== 擂台赛监控 ====================
+
+    def add_monitor_target(self, team_id: str, remark: str = "") -> bool:
+        """添加监控目标，返回是否为新插入。已存在则仅更新备注。"""
+        now = self._now_text()
+        existing = self.get_monitor_target(team_id)
+        if existing:
+            self.cursor.execute(
+                """
+                UPDATE iscc_monitor_target
+                SET remark = ?, updated_at = ?
+                WHERE team_id = ?
+                """,
+                (remark, now, team_id),
+            )
+            return False
+        self.cursor.execute(
+            """
+            INSERT INTO iscc_monitor_target
+                (team_id, remark, team_name, total_score, baseline_ready_at, created_at, updated_at)
+            VALUES (?, ?, '', '', '', ?, ?)
+            """,
+            (team_id, remark, now, now),
+        )
+        return True
+
+    def remove_monitor_target(self, team_id: str) -> bool:
+        self.cursor.execute(
+            "DELETE FROM iscc_monitor_target WHERE team_id = ?",
+            (team_id,),
+        )
+        removed = self.cursor.rowcount > 0
+        if removed:
+            self.cursor.execute(
+                "DELETE FROM iscc_monitor_submit WHERE team_id = ?",
+                (team_id,),
+            )
+        return removed
+
+    def get_monitor_target(self, team_id: str) -> Optional[dict]:
+        self.cursor.execute(
+            """
+            SELECT team_id, remark, team_name, total_score,
+                   baseline_ready_at, created_at, updated_at
+            FROM iscc_monitor_target
+            WHERE team_id = ?
+            """,
+            (team_id,),
+        )
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
+
+    def list_monitor_targets(self) -> list[dict]:
+        self.cursor.execute(
+            """
+            SELECT team_id, remark, team_name, total_score,
+                   baseline_ready_at, created_at, updated_at
+            FROM iscc_monitor_target
+            ORDER BY created_at ASC
+            """
+        )
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    def update_monitor_profile(self, team_id: str, team_name: str, total_score: str):
+        self.cursor.execute(
+            """
+            UPDATE iscc_monitor_target
+            SET team_name = ?, total_score = ?, updated_at = ?
+            WHERE team_id = ?
+            """,
+            (team_name, total_score, self._now_text(), team_id),
+        )
+
+    def mark_monitor_baseline_ready(self, team_id: str):
+        now = self._now_text()
+        self.cursor.execute(
+            """
+            UPDATE iscc_monitor_target
+            SET baseline_ready_at = ?, updated_at = ?
+            WHERE team_id = ? AND baseline_ready_at = ''
+            """,
+            (now, now, team_id),
+        )
+
+    def get_monitor_known_submits(self, team_id: str) -> dict[str, dict]:
+        """返回某 team 在擂台赛上的全部已知通过记录，key 为题目名称。"""
+        self.cursor.execute(
+            """
+            SELECT challenge_name, category, score, solved_at, recorded_at
+            FROM iscc_monitor_submit
+            WHERE team_id = ?
+            """,
+            (team_id,),
+        )
+        result: dict[str, dict] = {}
+        for row in self.cursor.fetchall():
+            result[row["challenge_name"]] = dict(row)
+        return result
+
+    def record_monitor_submit(
+        self,
+        team_id: str,
+        challenge_name: str,
+        category: str,
+        score: str,
+        solved_at: str,
+    ):
+        """写入或更新一条通过记录。solved_at 仅在原值为空时才覆盖，
+        避免 ISCC 页面显示相对时间（如"刚刚"）时每轮都被刷掉。"""
+        now = self._now_text()
+        self.cursor.execute(
+            """
+            INSERT INTO iscc_monitor_submit
+                (team_id, challenge_name, category, score, solved_at, recorded_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(team_id, challenge_name)
+            DO UPDATE SET category = excluded.category,
+                          score = excluded.score,
+                          solved_at = CASE
+                              WHEN iscc_monitor_submit.solved_at = '' THEN excluded.solved_at
+                              ELSE iscc_monitor_submit.solved_at
+                          END,
+                          recorded_at = excluded.recorded_at
+            """,
+            (team_id, challenge_name, category, score, solved_at, now),
         )
