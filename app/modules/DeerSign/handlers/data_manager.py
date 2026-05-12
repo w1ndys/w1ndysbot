@@ -99,6 +99,30 @@ class DataManager:
         )
 
     def add_sign(self, group_id: str, user_id: str, year_month: str, day: int, increment: bool = True) -> int:
+        now_text = self._now_text()
+        if not increment:
+            self.cursor.execute(
+                """
+                INSERT INTO sign_record (group_id, user_id, year_month, day, count, updated_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+                ON CONFLICT(group_id, user_id, year_month, day) DO NOTHING
+                """,
+                (group_id, user_id, year_month, day, now_text),
+            )
+            return self._get_sign_count(group_id, user_id, year_month, day)
+
+        self.cursor.execute(
+            """
+            INSERT INTO sign_record (group_id, user_id, year_month, day, count, updated_at)
+            VALUES (?, ?, ?, ?, 1, ?)
+            ON CONFLICT(group_id, user_id, year_month, day)
+            DO UPDATE SET count = count + 1, updated_at = excluded.updated_at
+            """,
+            (group_id, user_id, year_month, day, now_text),
+        )
+        return self._get_sign_count(group_id, user_id, year_month, day)
+
+    def _get_sign_count(self, group_id: str, user_id: str, year_month: str, day: int) -> int:
         self.cursor.execute(
             """
             SELECT count FROM sign_record
@@ -107,25 +131,7 @@ class DataManager:
             (group_id, user_id, year_month, day),
         )
         row = self.cursor.fetchone()
-        if row:
-            new_count = int(row["count"]) + 1 if increment else int(row["count"])
-            self.cursor.execute(
-                """
-                UPDATE sign_record SET count = ?, updated_at = ?
-                WHERE group_id = ? AND user_id = ? AND year_month = ? AND day = ?
-                """,
-                (new_count, self._now_text(), group_id, user_id, year_month, day),
-            )
-            return new_count
-
-        self.cursor.execute(
-            """
-            INSERT INTO sign_record (group_id, user_id, year_month, day, count, updated_at)
-            VALUES (?, ?, ?, ?, 1, ?)
-            """,
-            (group_id, user_id, year_month, day, self._now_text()),
-        )
-        return 1
+        return int(row["count"]) if row else 0
 
     def has_sign(self, group_id: str, user_id: str, year_month: str, day: int) -> bool:
         self.cursor.execute(
