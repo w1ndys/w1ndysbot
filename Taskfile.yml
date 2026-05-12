@@ -4,7 +4,6 @@ silent: true
 
 vars:
   BOT_IMAGE: '{{.BOT_IMAGE | default "w1ndysbot:latest"}}'
-  NAPCAT_IMAGE: '{{.NAPCAT_IMAGE | default "mlikiowa/napcat-docker:latest"}}'
   DEPLOY_BUNDLE: '{{.DEPLOY_BUNDLE | default "deploy/dist/w1ndysbot-deploy.tar.gz"}}'
   COMPOSE_FILE: '{{.COMPOSE_FILE | default "deploy/compose.prod.yml"}}'
 
@@ -31,23 +30,17 @@ tasks:
     cmds:
       - docker build -t {{.BOT_IMAGE}} .
 
-  pull-images:
-    desc: 拉取生产部署所需镜像
-    cmds:
-      - docker pull {{.NAPCAT_IMAGE}}
-
   package-deploy:
-    desc: 打包镜像和生产运维配置
+    desc: 打包 bot 镜像和生产运维配置（不含 napcat，napcat 由服务器自行拉取）
     deps:
-      - pull-images
       - build-image
     cmds:
       - mkdir -p deploy/dist
-      - docker save -o deploy/dist/w1ndysbot-images.tar {{.BOT_IMAGE}} {{.NAPCAT_IMAGE}}
+      - docker save -o deploy/dist/w1ndysbot-images.tar {{.BOT_IMAGE}}
       - tar -czf {{.DEPLOY_BUNDLE}} deploy/compose.prod.yml deploy/.env.example deploy/dist/w1ndysbot-images.tar
 
   deploy:
-    desc: 部署到生产环境服务器，示例 task deploy HOST=1.2.3.4 PORT=22 USER=root DIR=/srv/app
+    desc: 仅部署并重启 bot 到生产服务器（napcat 由服务器自行拉取与维护），示例 task deploy HOST=1.2.3.4 PORT=22 USER=root DIR=/srv/app
     deps:
       - package-deploy
     vars:
@@ -61,16 +54,16 @@ tasks:
       - |
         ssh -p {{.PORT}} {{.USER}}@{{.HOST}} "cd {{.DIR}} && \
           tar -xzf w1ndysbot-deploy.tar.gz --strip-components=1 && \
-          mkdir -p /opt/w1ndysbot/app/data /opt/w1ndysbot/app/logs /opt/napcat && \
+          mkdir -p /opt/w1ndysbot/app/data /opt/w1ndysbot/app/logs && \
           if [ ! -f /opt/w1ndysbot/app/.env ]; then cp .env.example /opt/w1ndysbot/app/.env; fi && \
           docker load -i dist/w1ndysbot-images.tar && \
-          BOT_IMAGE={{.BOT_IMAGE}} NAPCAT_IMAGE={{.NAPCAT_IMAGE}} docker compose -f compose.prod.yml up -d && \
+          BOT_IMAGE={{.BOT_IMAGE}} docker compose -f compose.prod.yml up -d --no-deps --force-recreate w1ndysbot && \
           docker image prune -f"
 
   prod:up:
     desc: 在当前机器用生产 compose 启动服务
     cmds:
-      - BOT_IMAGE={{.BOT_IMAGE}} NAPCAT_IMAGE={{.NAPCAT_IMAGE}} docker compose -f {{.COMPOSE_FILE}} up -d
+      - BOT_IMAGE={{.BOT_IMAGE}} docker compose -f {{.COMPOSE_FILE}} up -d
 
   prod:logs:
     desc: 查看生产 compose 日志

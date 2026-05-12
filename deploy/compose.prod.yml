@@ -3,8 +3,6 @@ services:
     image: ${BOT_IMAGE:-w1ndysbot:latest}
     container_name: w1ndysbot
     restart: unless-stopped
-    depends_on:
-      - napcat
     env_file:
       - /opt/w1ndysbot/app/.env
     environment:
