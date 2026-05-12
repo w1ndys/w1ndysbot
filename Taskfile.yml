@@ -50,13 +50,11 @@ tasks:
     desc: 部署到生产环境服务器，示例 task deploy HOST=1.2.3.4 PORT=22 USER=root DIR=/srv/app
     deps:
       - package-deploy
-    requires:
-      vars:
-        - HOST
-        - USER
-        - DIR
     vars:
+      HOST: '{{.HOST | default "mylinux"}}'
       PORT: '{{.PORT | default "22"}}'
+      USER: '{{.USER | default "root"}}'
+      DIR: '{{.DIR | default "/opt/w1ndysbot"}}'
     cmds:
       - ssh -p {{.PORT}} {{.USER}}@{{.HOST}} "mkdir -p {{.DIR}}"
       - scp -P {{.PORT}} {{.DEPLOY_BUNDLE}} {{.USER}}@{{.HOST}}:{{.DIR}}/w1ndysbot-deploy.tar.gz
