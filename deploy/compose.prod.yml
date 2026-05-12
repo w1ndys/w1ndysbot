@@ -8,9 +8,9 @@ services:
     networks:
       - w1ndysbot
     volumes:
-      - ./.env:/app/.env:ro
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - /opt/w1ndysbot/.env:/app/.env:ro
+      - /opt/w1ndysbot/data:/app/data
+      - /opt/w1ndysbot/logs:/app/logs
 
   napcat:
     image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
@@ -21,7 +21,7 @@ services:
     ports:
       - "6099:6099"
     volumes:
-      - ./napcat:/app/napcat
+      - /opt/napcat:/app/napcat
 
 networks:
   w1ndysbot:
