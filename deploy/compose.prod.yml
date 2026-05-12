@@ -5,10 +5,13 @@ services:
     restart: unless-stopped
     depends_on:
       - napcat
+    env_file:
+      - /opt/w1ndysbot/app/.env
+    environment:
+      WS_URL: ws://napcat:3001
     networks:
       - w1ndysbot
     volumes:
-      - /opt/w1ndysbot/app/.env:/app/.env:ro
       - /opt/w1ndysbot/app/data:/app/data
       - /opt/w1ndysbot/app/logs:/app/logs
 
