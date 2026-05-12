@@ -8,7 +8,7 @@ services:
     env_file:
       - /opt/w1ndysbot/app/.env
     environment:
-      WS_URL: ws://napcat:6099
+      WS_URL: ws://napcat:3001
     networks:
       - w1ndysbot
     volumes:
