@@ -83,13 +83,19 @@ class ISCCClient:
         return bool(self._extract_team_id(html)) and "login" not in html.lower()
 
     async def fetch_nonces(self) -> tuple[str, str]:
-        """获取练武题与擂台题的 nonce，返回 (regular_nonce, arena_nonce)。任一页面失败视为空串。"""
+        """获取练武题与擂台题的 nonce，返回 (regular_nonce, arena_nonce)。
+
+        - 登录失效异常会向外抛出，让调用侧决定是否重登录重试。
+        - 其它网络/HTTP 错误视为"这次取不到"，对应字段返回空串。
+        """
         async with self._operation_session():
             async def _fetch(path: str) -> str:
                 try:
                     html = await self._request_text("GET", path, referer=f"{self.base_url}/")
                     return self._extract_nonce(html)
-                except ISCCClientError:
+                except ISCCClientError as e:
+                    if "登录状态失效" in str(e):
+                        raise
                     return ""
 
             regular_nonce = await _fetch("/challenges")

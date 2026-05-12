@@ -13,12 +13,13 @@ from .iscc_client import ISCCClient
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
+# DB meta 表中记录"最近一次每日刷新日期（北京时间 YYYY-MM-DD）"使用的 key
+DAILY_REFRESH_META_KEY = "daily_refresh_last_date"
+
 
 class MetaEventHandler:
     _last_run_at = 0
     _running = False
-    # 记录 "YYYY-MM-DD" 字符串，用于保证每个北京时间自然日只刷新一次
-    _last_daily_refresh_date = ""
 
     def __init__(self, websocket, msg):
         self.websocket = websocket
@@ -48,25 +49,28 @@ class MetaEventHandler:
         try:
             with DataManager() as dm:
                 accounts = dm.get_all_accounts()
+                last_refresh_date = dm.get_meta(DAILY_REFRESH_META_KEY)
 
             beijing_now = datetime.now(BEIJING_TZ)
-            should_daily_refresh = self._should_daily_refresh(beijing_now)
+            should_daily_refresh = self._should_daily_refresh(beijing_now, last_refresh_date)
+
+            if should_daily_refresh:
+                # 先落库标记，避免刷新过程中进程崩溃、重启后又触发一轮
+                today = beijing_now.strftime("%Y-%m-%d")
+                with DataManager() as dm:
+                    dm.set_meta(DAILY_REFRESH_META_KEY, today)
 
             for account in accounts:
                 if should_daily_refresh:
                     await self._daily_refresh_account(account, beijing_now)
                 else:
                     await self._keep_account_alive(account)
-
-            if should_daily_refresh:
-                # 不管账号是否处理成功，都标记当日已触发，避免同一分钟重复执行
-                self.__class__._last_daily_refresh_date = beijing_now.strftime("%Y-%m-%d")
         finally:
             self.__class__._running = False
 
-    def _should_daily_refresh(self, beijing_now: datetime) -> bool:
+    def _should_daily_refresh(self, beijing_now: datetime, last_refresh_date: str) -> bool:
         today = beijing_now.strftime("%Y-%m-%d")
-        if self.__class__._last_daily_refresh_date == today:
+        if last_refresh_date == today:
             return False
         # 到达或超过 07:50 即触发。心跳最小间隔 60s，能保证当日被触发。
         if beijing_now.hour > DAILY_REFRESH_HOUR:
@@ -133,8 +137,9 @@ class MetaEventHandler:
         try:
             regular_nonce, arena_nonce = await client.fetch_nonces()
             if regular_nonce or arena_nonce:
+                # 用 update_nonce + `x or None`：抓到空串视为"这次没拿到"，保留 DB 原值
                 with DataManager() as dm:
-                    dm.save_nonce(user_id, regular_nonce, arena_nonce)
+                    dm.update_nonce(user_id, regular_nonce or None, arena_nonce or None)
         except Exception as e:
             logger.warning(f"[{MODULE_NAME}]ISCC 每日定时刷新 nonce 失败: {e}")
 

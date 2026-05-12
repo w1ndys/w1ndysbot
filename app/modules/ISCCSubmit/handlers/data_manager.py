@@ -37,6 +37,16 @@ class DataManager:
             )
             """
         )
+        # 通用 k/v 元数据表，用于持久化跨进程状态（例如每日刷新日期）
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS iscc_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         self.conn.commit()
 
     def __enter__(self):
@@ -130,3 +140,25 @@ class DataManager:
         new_regular = regular_nonce if regular_nonce is not None else existing.get("regular_nonce", "")
         new_arena = arena_nonce if arena_nonce is not None else existing.get("arena_nonce", "")
         self.save_nonce(user_id, new_regular, new_arena)
+
+    def get_meta(self, key: str) -> str:
+        self.cursor.execute(
+            """
+            SELECT value FROM iscc_meta WHERE key = ?
+            """,
+            (key,),
+        )
+        row = self.cursor.fetchone()
+        return row["value"] if row else ""
+
+    def set_meta(self, key: str, value: str):
+        self.cursor.execute(
+            """
+            INSERT INTO iscc_meta (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key)
+            DO UPDATE SET value = excluded.value,
+                          updated_at = excluded.updated_at
+            """,
+            (key, value, self._now_text()),
+        )
