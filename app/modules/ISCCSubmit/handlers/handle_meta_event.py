@@ -2,6 +2,7 @@ import time
 from datetime import datetime, timezone, timedelta
 
 from api.message import send_private_msg
+from config import OWNER_ID
 from core.switchs import is_private_switch_on
 from logger import logger
 from utils.generate import generate_text_message
@@ -9,6 +10,7 @@ from utils.generate import generate_text_message
 from .. import DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE, MODULE_NAME
 from .data_manager import DataManager
 from .iscc_client import ISCCClient
+from .monitor_service import MonitorLock, run_monitor_once
 
 
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -43,7 +45,6 @@ class MetaEventHandler:
         now = int(time.time())
         if now - self.__class__._last_run_at < 60:
             return
-        self.__class__._last_run_at = now
         self.__class__._running = True
 
         try:
@@ -60,13 +61,46 @@ class MetaEventHandler:
                 with DataManager() as dm:
                     dm.set_meta(DAILY_REFRESH_META_KEY, today)
 
+            # 先跑账号 session 保活 / 每日刷新
             for account in accounts:
                 if should_daily_refresh:
                     await self._daily_refresh_account(account, beijing_now)
                 else:
                     await self._keep_account_alive(account)
+
+            # 再跑擂台赛监控：上一步可能刷新了 session，需要重新读 DB 拿到最新值
+            await self._run_arena_monitor()
+
+            # 真正跑完后再更新节流时间戳，避免长任务被后续心跳误判为"节流未到"后又撞上 _running 锁
+            self.__class__._last_run_at = int(time.time())
         finally:
             self.__class__._running = False
+
+    async def _run_arena_monitor(self):
+        if not OWNER_ID:
+            return
+
+        lock = MonitorLock.get()
+        if lock.locked():
+            return
+
+        with DataManager() as dm:
+            account = dm.get_account(str(OWNER_ID))
+
+        if not account or not account.get("session"):
+            # 没有可用凭据，跳过即可（管理员还没 iscc配置）
+            return
+
+        async with lock:
+            try:
+                await run_monitor_once(
+                    self.websocket,
+                    str(OWNER_ID),
+                    account=account,
+                    manual_trigger=False,
+                )
+            except Exception as e:
+                logger.error(f"[{MODULE_NAME}]心跳触发擂台赛监控失败: {e}")
 
     def _should_daily_refresh(self, beijing_now: datetime, last_refresh_date: str) -> bool:
         today = beijing_now.strftime("%Y-%m-%d")
