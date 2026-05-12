@@ -5,8 +5,11 @@ services:
     restart: unless-stopped
     env_file:
       - /opt/w1ndysbot/app/.env
+    # 明确声明东八区（Asia/Shanghai）时区环境，避免容器默认 UTC 导致
+    # 模块内基于 datetime.now() 的定时/日志时间出现 8 小时偏差。
     environment:
       WS_URL: ws://napcat:3001
+      TZ: Asia/Shanghai
     networks:
       - w1ndysbot
     volumes:
@@ -17,6 +20,9 @@ services:
     image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
     container_name: napcat
     restart: unless-stopped
+    # 同步声明东八区时区，保持整套服务时间基准一致。
+    environment:
+      TZ: Asia/Shanghai
     networks:
       - w1ndysbot
     ports:
