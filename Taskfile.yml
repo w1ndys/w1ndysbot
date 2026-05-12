@@ -61,6 +61,8 @@ tasks:
       - |
         ssh -p {{.PORT}} {{.USER}}@{{.HOST}} "cd {{.DIR}} && \
           tar -xzf w1ndysbot-deploy.tar.gz --strip-components=1 && \
+          mkdir -p /opt/w1ndysbot/app/data /opt/w1ndysbot/app/logs /opt/napcat && \
+          if [ ! -f /opt/w1ndysbot/app/.env ]; then cp .env.example /opt/w1ndysbot/app/.env; fi && \
           docker load -i dist/w1ndysbot-images.tar && \
           BOT_IMAGE={{.BOT_IMAGE}} NAPCAT_IMAGE={{.NAPCAT_IMAGE}} docker compose -f compose.prod.yml up -d && \
           docker image prune -f"
