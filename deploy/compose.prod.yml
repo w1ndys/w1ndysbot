@@ -1,0 +1,28 @@
+services:
+  w1ndysbot:
+    image: ${BOT_IMAGE:-w1ndysbot:latest}
+    container_name: w1ndysbot
+    restart: unless-stopped
+    depends_on:
+      - napcat
+    networks:
+      - w1ndysbot
+    volumes:
+      - /opt/w1ndysbot/app/.env:/app/.env:ro
+      - /opt/w1ndysbot/app/data:/app/data
+      - /opt/w1ndysbot/app/logs:/app/logs
+
+  napcat:
+    image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
+    container_name: napcat
+    restart: unless-stopped
+    networks:
+      - w1ndysbot
+    ports:
+      - "6099:6099"
+    volumes:
+      - /opt/napcat:/app/napcat
+
+networks:
+  w1ndysbot:
+    name: w1ndysbot
