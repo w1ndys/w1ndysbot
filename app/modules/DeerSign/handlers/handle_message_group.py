@@ -55,17 +55,17 @@ class GroupMessageHandler:
             if not is_group_switch_on(self.group_id, MODULE_NAME):
                 return
 
-            if self.raw_message == SIGN_COMMAND or self.raw_message.startswith(f"{SIGN_COMMAND} "):
+            if self._matches_command(SIGN_COMMAND):
                 await self._handle_sign()
-            elif self.raw_message.startswith(MAKEUP_COMMAND):
+            elif self._matches_command(MAKEUP_COMMAND):
                 await self._handle_makeup()
-            elif self.raw_message == CALENDAR_COMMAND or self.raw_message.startswith(f"{CALENDAR_COMMAND} "):
+            elif self._matches_command(CALENDAR_COMMAND):
                 await self._handle_calendar()
-            elif self.raw_message == RANK_COMMAND:
+            elif self._matches_command(RANK_COMMAND):
                 await self._handle_rank()
-            elif self.raw_message.startswith(ASSIST_COMMAND):
+            elif self._matches_command(ASSIST_COMMAND):
                 await self._handle_assist_permission()
-            elif self.raw_message.startswith(BAN_COMMAND):
+            elif self._matches_command(BAN_COMMAND):
                 await self._handle_ban()
         except Exception as e:
             logger.error(f"[{MODULE_NAME}]处理群消息失败: {e}")
@@ -87,7 +87,10 @@ class GroupMessageHandler:
 
     def _is_business_command(self) -> bool:
         commands = (SIGN_COMMAND, MAKEUP_COMMAND, CALENDAR_COMMAND, RANK_COMMAND, ASSIST_COMMAND, BAN_COMMAND)
-        return any(self.raw_message == command or self.raw_message.startswith(f"{command} ") for command in commands)
+        return any(self._matches_command(command) for command in commands)
+
+    def _matches_command(self, command: str) -> bool:
+        return self.raw_message == command or self.raw_message.startswith(f"{command} ")
 
     async def _handle_sign(self):
         target_id = self._first_at_user() or self.user_id
