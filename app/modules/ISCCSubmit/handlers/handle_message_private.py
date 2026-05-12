@@ -7,7 +7,15 @@ from logger import logger
 from utils.auth import is_system_admin
 from utils.generate import generate_reply_message, generate_text_message
 
-from .. import CONFIG_COMMAND, FLAG_PATTERN, HELP_COMMAND, MODULE_NAME, SWITCH_NAME
+from .. import (
+    CONFIG_COMMAND,
+    FLAG_PATTERN,
+    HELP_COMMAND,
+    MODULE_NAME,
+    NONCE_COMMAND,
+    SESSION_COMMAND,
+    SWITCH_NAME,
+)
 from .data_manager import DataManager
 from .iscc_client import ISCCClient, ISCCClientError, SubmitResult
 
@@ -36,6 +44,12 @@ class PrivateMessageHandler:
 
             if self.raw_message.startswith(f"{CONFIG_COMMAND} "):
                 await self._handle_config()
+                return
+            if self.raw_message.lower() == SESSION_COMMAND.lower():
+                await self._handle_query_session()
+                return
+            if self.raw_message.lower() == NONCE_COMMAND.lower():
+                await self._handle_query_nonce()
                 return
             if re.fullmatch(FLAG_PATTERN, self.raw_message):
                 await self._handle_submit_flag()
@@ -86,7 +100,52 @@ class PrivateMessageHandler:
         client = await self._ensure_client(account)
         results = await client.submit_flag_to_unsolved(self.raw_message)
         await self._save_session(client.session_cookie)
+        await self._refresh_nonces(client)
         await self._reply(self._format_results(results))
+
+    async def _handle_query_session(self):
+        with DataManager() as dm:
+            account = dm.get_account(self.user_id)
+        if not account:
+            await self._reply("尚未配置 ISCC 账号，请先发送：iscc配置 <账号> <密码>")
+            return
+        session = account.get("session") or ""
+        if not session:
+            await self._reply("当前未保存 ISCC session，请提交一次 flag 触发登录。")
+            return
+        await self._reply(f"当前 ISCC session：\n{session}")
+
+    async def _handle_query_nonce(self):
+        with DataManager() as dm:
+            account = dm.get_account(self.user_id)
+            nonce_row = dm.get_nonce(self.user_id) if account else None
+        if not account:
+            await self._reply("尚未配置 ISCC 账号，请先发送：iscc配置 <账号> <密码>")
+            return
+
+        if not nonce_row or (not nonce_row.get("regular_nonce") and not nonce_row.get("arena_nonce")):
+            # 没有缓存的 nonce，尝试立刻拉取一次
+            client = await self._ensure_client(account)
+            regular_nonce, arena_nonce = await client.fetch_nonces()
+            await self._save_session(client.session_cookie)
+            if regular_nonce or arena_nonce:
+                with DataManager() as dm:
+                    dm.save_nonce(self.user_id, regular_nonce, arena_nonce)
+                nonce_row = {
+                    "regular_nonce": regular_nonce,
+                    "arena_nonce": arena_nonce,
+                    "updated_at": "刚刚",
+                }
+            else:
+                await self._reply("获取 nonce 失败，请稍后重试。")
+                return
+
+        await self._reply(
+            "当前 ISCC nonce：\n"
+            f"练武题 nonce：{nonce_row.get('regular_nonce') or '（未获取）'}\n"
+            f"擂台题 nonce：{nonce_row.get('arena_nonce') or '（未获取）'}\n"
+            f"更新时间：{nonce_row.get('updated_at', '未知')}"
+        )
 
     async def _ensure_client(self, account: dict) -> ISCCClient:
         client = ISCCClient(account.get("session", ""))
@@ -103,6 +162,17 @@ class PrivateMessageHandler:
             return
         with DataManager() as dm:
             dm.save_session(self.user_id, session)
+
+    async def _refresh_nonces(self, client: ISCCClient):
+        try:
+            regular_nonce, arena_nonce = await client.fetch_nonces()
+        except Exception as e:
+            logger.warning(f"[{MODULE_NAME}]刷新 nonce 失败: {e}")
+            return
+        if not regular_nonce and not arena_nonce:
+            return
+        with DataManager() as dm:
+            dm.save_nonce(self.user_id, regular_nonce, arena_nonce)
 
     def _format_results(self, results: list[SubmitResult]) -> str:
         if not results:
@@ -128,6 +198,8 @@ class PrivateMessageHandler:
             "iscc：系统管理员开关模块\n"
             "iscc配置 <账号> <密码>：登录并保存账号、密码、session\n"
             "ISCC{xxxxx}：提交 flag 到练武题和擂台题所有未解题目\n"
+            f"{SESSION_COMMAND}：查询当前 ISCC session\n"
+            f"{NONCE_COMMAND}：查询当前练武题和擂台题 nonce\n"
             f"{SWITCH_NAME}{MENU_COMMAND}：查看模块菜单"
         )
 

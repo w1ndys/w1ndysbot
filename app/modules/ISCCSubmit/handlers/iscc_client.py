@@ -82,6 +82,20 @@ class ISCCClient:
             return False
         return bool(self._extract_team_id(html)) and "login" not in html.lower()
 
+    async def fetch_nonces(self) -> tuple[str, str]:
+        """获取练武题与擂台题的 nonce，返回 (regular_nonce, arena_nonce)。任一页面失败视为空串。"""
+        async with self._operation_session():
+            async def _fetch(path: str) -> str:
+                try:
+                    html = await self._request_text("GET", path, referer=f"{self.base_url}/")
+                    return self._extract_nonce(html)
+                except ISCCClientError:
+                    return ""
+
+            regular_nonce = await _fetch("/challenges")
+            arena_nonce = await _fetch("/arena")
+            return regular_nonce, arena_nonce
+
     async def keep_alive_arena_score(self) -> str:
         async with self._operation_session():
             html = await self._request_text("GET", "/arena", referer=f"{self.base_url}/")

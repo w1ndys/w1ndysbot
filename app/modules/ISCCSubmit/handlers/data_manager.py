@@ -27,6 +27,16 @@ class DataManager:
             )
             """
         )
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS iscc_nonce (
+                user_id TEXT PRIMARY KEY,
+                regular_nonce TEXT NOT NULL DEFAULT '',
+                arena_nonce TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         self.conn.commit()
 
     def __enter__(self):
@@ -88,3 +98,35 @@ class DataManager:
             """,
             (session, self._now_text(), user_id),
         )
+
+    def get_nonce(self, user_id: str) -> dict | None:
+        self.cursor.execute(
+            """
+            SELECT user_id, regular_nonce, arena_nonce, updated_at FROM iscc_nonce
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        )
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
+
+    def save_nonce(self, user_id: str, regular_nonce: str = "", arena_nonce: str = ""):
+        """保存 nonce，传入的空字符串会覆盖已有值，因此调用方需按需传入。"""
+        self.cursor.execute(
+            """
+            INSERT INTO iscc_nonce (user_id, regular_nonce, arena_nonce, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id)
+            DO UPDATE SET regular_nonce = excluded.regular_nonce,
+                          arena_nonce = excluded.arena_nonce,
+                          updated_at = excluded.updated_at
+            """,
+            (user_id, regular_nonce, arena_nonce, self._now_text()),
+        )
+
+    def update_nonce(self, user_id: str, regular_nonce: str | None = None, arena_nonce: str | None = None):
+        """按需更新单一 nonce 字段，None 表示保持原值。"""
+        existing = self.get_nonce(user_id) or {"regular_nonce": "", "arena_nonce": ""}
+        new_regular = regular_nonce if regular_nonce is not None else existing.get("regular_nonce", "")
+        new_arena = arena_nonce if arena_nonce is not None else existing.get("arena_nonce", "")
+        self.save_nonce(user_id, new_regular, new_arena)
