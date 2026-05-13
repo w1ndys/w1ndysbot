@@ -8,6 +8,7 @@ from logger import logger
 from utils.generate import generate_node_message, generate_text_message
 from .empty_classroom_service import extract_classrooms, query_empty_classroom_direct
 from .scheduled_config import (
+    get_forward_announcement,
     get_group_buildings,
     get_last_run_date,
     set_last_run_date,
@@ -122,6 +123,7 @@ class MetaEventHandler:
                 continue
 
             await self._send_building_forward_message(group_id, building, period_results)
+            await asyncio.sleep(1)
             summary_lines.append(self._format_building_summary(building, period_results))
 
         await send_group_msg(
@@ -151,6 +153,16 @@ class MetaEventHandler:
 
     async def _send_building_forward_message(self, group_id, building, period_results):
         messages = []
+        announcement = get_forward_announcement()
+        if announcement:
+            messages.append(
+                generate_node_message(
+                    user_id=BOT_USER_ID,
+                    nickname=BOT_NICKNAME,
+                    content=[generate_text_message(announcement)],
+                )
+            )
+
         for period_label, range_results in period_results:
             text = self._format_period_classrooms(building, period_label, range_results)
             messages.append(
@@ -168,7 +180,7 @@ class MetaEventHandler:
             message=messages,
             news=title,
             prompt=title,
-            summary=f"共 {len(messages)} 条时段消息",
+            summary=f"共 {len(messages)} 条消息",
             source=MODULE_NAME,
         )
 
