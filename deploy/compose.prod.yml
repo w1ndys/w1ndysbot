@@ -38,3 +38,7 @@ services:
 networks:
   w1ndysbot:
     name: w1ndysbot
+    # 声明为外部网络：网络生命周期独立于 compose project，避免因 project 归属
+    # 不一致（label `com.docker.compose.project` 不匹配）产生 warning 与重建风险。
+    # 部署脚本会在 up 前先确保网络存在（docker network create w1ndysbot）。
+    external: true
