@@ -58,11 +58,19 @@ tasks:
           -e "ssh -p {{.PORT}}" \
           ./ {{.USER}}@{{.HOST}}:{{.DIR}}/
       # 3) 在远程服务器构建镜像并重启 bot；env 文件首次部署时从样例拷贝
+      #    - 固定 compose project name 为 w1ndysbot，避免跟历史上按 deploy/ 目录名推断出的 project（deploy）不一致，
+      #      导致同名容器被视为"外部容器"而触发 name 冲突。
+      #    - 兜底清理同名旧容器：历史遗留或手动 run 的容器不归任何 compose project 管，
+      #      `up --force-recreate` 识别不到，只能显式删掉后再拉起。
       - |
         ssh -p {{.PORT}} {{.USER}}@{{.HOST}} "cd {{.DIR}} && \
           if [ ! -f app/.env ]; then cp deploy/.env.example app/.env; fi && \
-          BOT_IMAGE={{.BOT_IMAGE}} docker compose -f deploy/compose.prod.yml build w1ndysbot && \
-          BOT_IMAGE={{.BOT_IMAGE}} docker compose -f deploy/compose.prod.yml up -d --no-deps --force-recreate w1ndysbot && \
+          docker network inspect w1ndysbot >/dev/null 2>&1 || docker network create w1ndysbot && \
+          if [ -n \"\$(docker ps -aq --filter name=^/w1ndysbot\$)\" ]; then \
+            docker rm -f w1ndysbot; \
+          fi && \
+          BOT_IMAGE={{.BOT_IMAGE}} docker compose -p w1ndysbot -f deploy/compose.prod.yml build w1ndysbot && \
+          BOT_IMAGE={{.BOT_IMAGE}} docker compose -p w1ndysbot -f deploy/compose.prod.yml up -d --no-deps --force-recreate w1ndysbot && \
           docker image prune -f"
 
   prod:up:
