@@ -1,10 +1,7 @@
-import json
-import os
 import uuid
 from datetime import datetime
 
 import aiohttp
-from dotenv import load_dotenv
 
 from .. import MODULE_NAME, SWITCH_NAME
 from api.message import delete_msg, send_group_msg
@@ -13,15 +10,12 @@ from core.switchs import handle_module_group_switch, is_group_switch_on
 from logger import logger
 from utils.auth import is_system_admin
 from utils.generate import generate_reply_message, generate_text_message
+from .empty_classroom_service import query_empty_classroom_text
+from .scheduled_config import get_group_buildings, set_group_buildings
 
 
-MODULE_DIR = os.path.dirname(os.path.dirname(__file__))
-load_dotenv(os.path.join(MODULE_DIR, ".env"))
-
-BASE_URL = os.getenv("QFNUKJS_BASE_URL", "https://kjs.easy-qfnu.top").rstrip("/")
-API_KEY = os.getenv("QFNUKJS_API_KEY", "")
-QUERY_TIMEOUT_SECONDS = 30
 TRIGGER_KEYWORD = "空教室"
+BUILDING_CONFIG_COMMAND = "定时空教室教学楼"
 PENDING_NOTE_PREFIX = f"{MODULE_NAME}_empty_classroom_pending"
 PENDING_MESSAGES = {}
 
@@ -83,135 +77,54 @@ class GroupMessageHandler:
             return False
         return all(segment.get("type") == "text" for segment in self.message)
 
-    async def _query_empty_classroom(self, text):
-        if not API_KEY:
-            return "qfnukjs 未配置 API Key，请在模块目录 .env 中配置 QFNUKJS_API_KEY。"
+    def _parse_building_names(self, text):
+        separators = ["，", ",", "、", "\n", " "]
+        for separator in separators:
+            text = text.replace(separator, " ")
+        return [part.strip() for part in text.split() if part.strip()]
 
-        headers = {
-            "X-API-Key": API_KEY,
-            "Content-Type": "application/json",
-        }
-        payload = {"text": text}
-        timeout = aiohttp.ClientTimeout(total=QUERY_TIMEOUT_SECONDS)
+    async def _handle_building_config_command(self):
+        command = f"{SWITCH_NAME}{BUILDING_CONFIG_COMMAND}"
+        raw_message = self.raw_message.strip()
+        if raw_message.lower() == command.lower():
+            buildings = get_group_buildings(self.group_id)
+            if buildings:
+                text = "当前定时空教室教学楼列表：" + "、".join(buildings)
+            else:
+                text = "当前未配置定时空教室教学楼列表。"
+            await send_group_msg(
+                self.websocket,
+                self.group_id,
+                [
+                    generate_reply_message(self.message_id),
+                    generate_text_message(text),
+                ],
+            )
+            return True
 
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                f"{BASE_URL}/api/v1/open/ai-query",
-                json=payload,
-                headers=headers,
-            ) as response:
-                response_text = await response.text()
-                if response.status >= 400:
-                    logger.error(
-                        f"[{MODULE_NAME}]空教室查询接口返回异常: "
-                        f"status={response.status}, body={response_text[:500]}"
-                    )
-                    return "空教室查询失败，请稍后再试。"
+        prefix = f"{command} "
+        if not raw_message.lower().startswith(prefix.lower()):
+            return False
 
-                try:
-                    data = json.loads(response_text)
-                except json.JSONDecodeError:
-                    return self._format_json_string(response_text)
+        if not is_system_admin(self.user_id):
+            logger.error(f"[{MODULE_NAME}]{self.user_id}无权限配置定时教学楼列表")
+            return True
 
-        return self._format_query_result(data)
-
-    def _try_parse_json_string(self, text):
-        text = text.strip()
-        if not text:
-            return ""
-
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return text
-
-    def _normalize_json_value(self, value):
-        if isinstance(value, str):
-            parsed = self._try_parse_json_string(value)
-            if parsed == value:
-                return value.strip()
-            return self._normalize_json_value(parsed)
-
-        if isinstance(value, list):
-            return [self._normalize_json_value(item) for item in value]
-
-        if isinstance(value, dict):
-            return {
-                key: self._normalize_json_value(item)
-                for key, item in value.items()
-            }
-
-        return value
-
-    def _format_json_value(self, value):
-        value = self._normalize_json_value(value)
-        if value in (None, "", [], {}):
-            return "空教室查询结果为空。"
-        if isinstance(value, dict) and "classrooms" in value:
-            return self._format_empty_classroom_result(value)
-        if isinstance(value, (dict, list)):
-            return json.dumps(value, ensure_ascii=False, indent=2)
-        return str(value).strip() or "空教室查询结果为空。"
-
-    def _format_empty_classroom_result(self, data):
-        classrooms = data.get("classrooms")
-        if not isinstance(classrooms, list):
-            return json.dumps(data, ensure_ascii=False, indent=2)
-
-        date = data.get("date")
-        week = data.get("week")
-        day_of_week = data.get("day_of_week")
-        weekday_text = self._format_weekday(day_of_week)
-
-        lines = ["空教室查询结果"]
-        meta_parts = []
-        if date:
-            meta_parts.append(f"日期：{date}")
-        if week:
-            meta_parts.append(f"第 {week} 周")
-        if weekday_text:
-            meta_parts.append(weekday_text)
-        if meta_parts:
-            lines.append("，".join(meta_parts))
-
-        if not classrooms:
-            lines.append("未查询到空教室信息。")
-            return "\n".join(lines)
-
-        classroom_text = "、".join(str(classroom) for classroom in classrooms)
-        lines.append(f"空教室（{len(classrooms)} 间）：{classroom_text}")
-        return "\n".join(lines)
-
-    def _format_weekday(self, day_of_week):
-        weekdays = {
-            1: "周一",
-            2: "周二",
-            3: "周三",
-            4: "周四",
-            5: "周五",
-            6: "周六",
-            7: "周日",
-        }
-        try:
-            return weekdays.get(int(day_of_week), "")
-        except (TypeError, ValueError):
-            return ""
-
-    def _format_json_string(self, text):
-        return self._format_json_value(text)
-
-    def _format_query_result(self, data):
-        if isinstance(data, dict):
-            for key in ("message", "result", "data", "answer", "text"):
-                value = data.get(key)
-                if value not in (None, "", [], {}):
-                    return self._format_json_value(value)
-            return self._format_json_value(data)
-
-        if isinstance(data, list):
-            return self._format_json_value(data) if data else "未查询到空教室信息。"
-
-        return self._format_json_value(data)
+        buildings = self._parse_building_names(raw_message[len(prefix) :])
+        saved_buildings = set_group_buildings(self.group_id, buildings)
+        if saved_buildings:
+            text = "已更新定时空教室教学楼列表：" + "、".join(saved_buildings)
+        else:
+            text = "已清空定时空教室教学楼列表。"
+        await send_group_msg(
+            self.websocket,
+            self.group_id,
+            [
+                generate_reply_message(self.message_id),
+                generate_text_message(text),
+            ],
+        )
+        return True
 
     async def _send_pending_message(self):
         pending_id = uuid.uuid4().hex
@@ -250,7 +163,7 @@ class GroupMessageHandler:
 
         pending_id = await self._send_pending_message()
         try:
-            result_text = await self._query_empty_classroom(query_text)
+            result_text = await query_empty_classroom_text(query_text)
             await send_group_msg(
                 self.websocket,
                 self.group_id,
@@ -273,6 +186,9 @@ class GroupMessageHandler:
                 return
 
             if await self._handle_menu_command():
+                return
+
+            if await self._handle_building_config_command():
                 return
 
             if not is_group_switch_on(self.group_id, MODULE_NAME):
