@@ -2,18 +2,26 @@ import json
 import os
 
 import aiohttp
-from dotenv import load_dotenv
 
 from .. import MODULE_NAME
 from logger import logger
+from .scheduled_config import get_api_key
 
-
-MODULE_DIR = os.path.dirname(os.path.dirname(__file__))
-load_dotenv(os.path.join(MODULE_DIR, ".env"))
 
 BASE_URL = os.getenv("QFNUKJS_BASE_URL", "https://kjs.easy-qfnu.top").rstrip("/")
-API_KEY = os.getenv("QFNUKJS_API_KEY", "")
 QUERY_TIMEOUT_SECONDS = 30
+API_KEY_MISSING_MESSAGE = "qfnukjs 未配置 API Key，请私聊发送：qfnukjs配置apikey <API Key>。"
+
+
+def get_request_headers():
+    api_key = get_api_key()
+    if not api_key:
+        raise RuntimeError(API_KEY_MISSING_MESSAGE)
+
+    return {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json",
+    }
 
 
 def format_weekday(day_of_week):
@@ -127,13 +135,7 @@ def extract_classrooms(data):
 
 
 async def query_empty_classroom_data(text):
-    if not API_KEY:
-        raise RuntimeError("qfnukjs 未配置 API Key，请在模块目录 .env 中配置 QFNUKJS_API_KEY。")
-
-    headers = {
-        "X-API-Key": API_KEY,
-        "Content-Type": "application/json",
-    }
+    headers = get_request_headers()
     payload = {"text": text}
     timeout = aiohttp.ClientTimeout(total=QUERY_TIMEOUT_SECONDS)
 
@@ -158,13 +160,7 @@ async def query_empty_classroom_data(text):
 
 
 async def query_empty_classroom_direct(building, start_node, end_node, date_offset=0):
-    if not API_KEY:
-        raise RuntimeError("qfnukjs 未配置 API Key，请在模块目录 .env 中配置 QFNUKJS_API_KEY。")
-
-    headers = {
-        "X-API-Key": API_KEY,
-        "Content-Type": "application/json",
-    }
+    headers = get_request_headers()
     payload = {
         "building": building,
         "date_offset": date_offset,

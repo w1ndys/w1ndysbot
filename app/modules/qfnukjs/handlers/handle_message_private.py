@@ -1,5 +1,13 @@
 from logger import logger
+from api.message import send_private_msg
+from utils.auth import is_system_admin
+from utils.generate import generate_reply_message, generate_text_message
 from .. import MODULE_NAME
+from .scheduled_config import get_api_key, set_api_key
+
+
+API_KEY_CONFIG_COMMAND = "qfnukjs配置apikey"
+API_KEY_STATUS_COMMAND = "qfnukjs apikey状态"
 
 
 class PrivateMessageHandler:
@@ -8,9 +16,38 @@ class PrivateMessageHandler:
     def __init__(self, websocket, msg):
         self.websocket = websocket
         self.msg = msg
+        self.user_id = str(msg.get("user_id", ""))
+        self.message_id = str(msg.get("message_id", ""))
+        self.raw_message = msg.get("raw_message", "").strip()
 
     async def handle(self):
         try:
-            pass
+            if not is_system_admin(self.user_id):
+                return
+
+            if self.raw_message.startswith(f"{API_KEY_CONFIG_COMMAND} "):
+                await self._handle_api_key_config()
+                return
+            if self.raw_message.lower() == API_KEY_STATUS_COMMAND.lower():
+                text = "qfnukjs API Key 已配置。"
+                if not get_api_key():
+                    text = "qfnukjs API Key 未配置。"
+                await self._reply(text)
         except Exception as e:
             logger.error(f"[{MODULE_NAME}]处理私聊消息失败: {e}")
+
+    async def _handle_api_key_config(self):
+        api_key = self.raw_message[len(API_KEY_CONFIG_COMMAND) :].strip()
+        if not api_key:
+            await self._reply(f"配置格式错误，用法：{API_KEY_CONFIG_COMMAND} <API Key>")
+            return
+
+        set_api_key(api_key)
+        await self._reply("qfnukjs API Key 已保存。")
+
+    async def _reply(self, text):
+        await send_private_msg(
+            self.websocket,
+            self.user_id,
+            [generate_reply_message(self.message_id), generate_text_message(text)],
+        )
