@@ -19,7 +19,9 @@ HELP_COMMAND = "iscc帮助"
 SESSION_COMMAND = "isccsession"
 NONCE_COMMAND = "isccnonce"
 REFRESH_COMMAND = "iscc刷新"
-FLAG_PATTERN = r"^ISCC\{.+\}$"
+# 不再要求消息以 ISCC{ 开头/结尾，只要消息里包含一段 ISCC{...} 就识别成 flag 提交，
+# 提高对客户端转发、引用、上下文带前后缀场景的容错。
+FLAG_PATTERN = r"ISCC\{[^{}]+\}"
 
 # 每日自动刷新 session 的北京时间（24 小时制）
 DAILY_REFRESH_HOUR = 7
@@ -35,7 +37,7 @@ MONITOR_CHECK_COMMAND = "isccm检测"
 COMMANDS = {
     SWITCH_NAME: "系统管理员开关 ISCC 自动提交与擂台赛监控模块",
     CONFIG_COMMAND: "配置 ISCC 账号，用法：iscc配置 <账号> <密码>",
-    "ISCC{xxxxx}": "提交 flag 到 ISCC 平台未解题目",
+    "ISCC{xxxxx}": "提交 flag 到 ISCC 平台未解题目（消息中包含 ISCC{...} 即可，无需独立成行）",
     SESSION_COMMAND: "查询当前 ISCC session",
     NONCE_COMMAND: "查询当前 ISCC 练武题和擂台题 nonce",
     REFRESH_COMMAND: "立即刷新练武题/擂台题未解题目缓存",

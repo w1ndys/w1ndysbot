@@ -78,8 +78,9 @@ class PrivateMessageHandler:
             if self.raw_message == MONITOR_CHECK_COMMAND:
                 await self._handle_monitor_check()
                 return
-            if re.fullmatch(FLAG_PATTERN, self.raw_message):
-                await self._handle_submit_flag()
+            flag_match = re.search(FLAG_PATTERN, self.raw_message)
+            if flag_match:
+                await self._handle_submit_flag(flag_match.group(0))
         except Exception as e:
             logger.error(f"[{MODULE_NAME}]处理私聊消息失败: {e}")
             await self._reply(f"ISCC 自动提交处理失败：{e}")
@@ -127,21 +128,21 @@ class PrivateMessageHandler:
             msg_lines.append(f"未解题缓存建立失败：{err}")
         await self._reply("\n".join(msg_lines))
 
-    async def _handle_submit_flag(self):
+    async def _handle_submit_flag(self, flag: str):
         with DataManager() as dm:
             account = dm.get_account(self.user_id)
         if not account:
             await self._reply("尚未配置 ISCC 账号，请先发送：iscc配置 <账号> <密码>")
             return
 
-        await self._reply("已开始提交 flag，请等待结果。")
+        await self._reply(f"已识别到 flag：{flag}\n已开始提交，请等待结果。")
         client = await self._ensure_client(account)
 
         # 优先用缓存；任一赛道缺缓存时，现场拉一次并落库，保证结果准。
         prefetched = await self._resolve_unsolved_ids(client)
 
         results = await client.submit_flag_to_unsolved(
-            self.raw_message, prefetched_ids=prefetched
+            flag, prefetched_ids=prefetched
         )
         await self._save_session(client.session_cookie)
         self._update_cache_after_submit(results)
@@ -356,7 +357,7 @@ class PrivateMessageHandler:
             "ISCC 自动提交与擂台赛监控帮助\n"
             "iscc：系统管理员开关模块\n"
             "iscc配置 <账号> <密码>：登录并保存账号、密码、session\n"
-            "ISCC{xxxxx}：提交 flag 到练武题和擂台题所有未解题目\n"
+            "ISCC{xxxxx}：消息中包含该形式即会被识别为 flag，自动提交到练武题和擂台题所有未解题目\n"
             f"{SESSION_COMMAND}：查询当前 ISCC session\n"
             f"{NONCE_COMMAND}：查询当前练武题和擂台题 nonce\n"
             f"{REFRESH_COMMAND}：立即刷新练武题/擂台题未解题目缓存\n"
