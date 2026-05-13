@@ -81,3 +81,17 @@ def set_api_key(api_key):
     config = load_config()
     config["api_key"] = str(api_key).strip()
     save_config(config)
+
+
+def get_forward_announcement():
+    return str(load_config().get("forward_announcement", "")).strip()
+
+
+def set_forward_announcement(text):
+    config = load_config()
+    announcement = str(text).strip()
+    if announcement:
+        config["forward_announcement"] = announcement
+    else:
+        config.pop("forward_announcement", None)
+    save_config(config)
