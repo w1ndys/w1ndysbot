@@ -19,11 +19,15 @@ RUN sed -i \
 # 否则 GroupQRDetector 启动会报：
 #   ImportError: libGL.so.1: cannot open shared object file: No such file or directory
 # slim 基础镜像不含这两个库，需在此安装 libgl1 + libglib2.0-0。
+#
+# DeerSign 模块用 PIL 画签到日历/排行榜时需要中文字体，否则会渲染成方框/乱码。
+# slim 镜像默认不含 CJK 字体，安装 fonts-wqy-microhei（约 10MB，代码首选字体）。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         tzdata \
         libgl1 \
         libglib2.0-0 \
+        fonts-wqy-microhei \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && echo "Asia/Shanghai" > /etc/timezone
