@@ -78,6 +78,19 @@ class DataManager:
             )
             """
         )
+        # 未解题目缓存：按 user_id + track 维度记录当前可提交的 challenge id 列表
+        # ids 用逗号分隔的字符串保存（不会很大，几十题量级），避免再建一张明细表
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS iscc_unsolved_cache (
+                user_id TEXT NOT NULL,
+                track TEXT NOT NULL,
+                ids TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, track)
+            )
+            """
+        )
         self.conn.commit()
 
     def __enter__(self):
@@ -193,6 +206,61 @@ class DataManager:
             """,
             (key, value, self._now_text()),
         )
+
+    # ==================== 未解题目缓存 ====================
+
+    def get_unsolved_ids(self, user_id: str, track: str) -> Optional[list[int]]:
+        """读取某用户某赛道的未解题缓存。返回 None 表示无缓存（区别于"已知为空"）。"""
+        self.cursor.execute(
+            """
+            SELECT ids FROM iscc_unsolved_cache WHERE user_id = ? AND track = ?
+            """,
+            (user_id, track),
+        )
+        row = self.cursor.fetchone()
+        if row is None:
+            return None
+        raw = (row["ids"] or "").strip()
+        if not raw:
+            return []
+        return [int(x) for x in raw.split(",") if x.strip().isdigit()]
+
+    def get_unsolved_meta(self, user_id: str, track: str) -> Optional[dict]:
+        self.cursor.execute(
+            """
+            SELECT ids, updated_at FROM iscc_unsolved_cache
+            WHERE user_id = ? AND track = ?
+            """,
+            (user_id, track),
+        )
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
+
+    def save_unsolved_ids(self, user_id: str, track: str, ids: list[int]):
+        """覆盖式保存未解题缓存。"""
+        joined = ",".join(str(int(x)) for x in ids)
+        self.cursor.execute(
+            """
+            INSERT INTO iscc_unsolved_cache (user_id, track, ids, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, track)
+            DO UPDATE SET ids = excluded.ids,
+                          updated_at = excluded.updated_at
+            """,
+            (user_id, track, joined, self._now_text()),
+        )
+
+    def remove_unsolved_ids(self, user_id: str, track: str, removed_ids: list[int]):
+        """从未解缓存里剔除若干 id（提交成功/已解题之后调用）。无缓存时静默跳过。"""
+        if not removed_ids:
+            return
+        current = self.get_unsolved_ids(user_id, track)
+        if current is None:
+            return
+        remaining = [cid for cid in current if cid not in set(removed_ids)]
+        if remaining == current:
+            return
+        self.save_unsolved_ids(user_id, track, remaining)
 
     # ==================== 擂台赛监控 ====================
 

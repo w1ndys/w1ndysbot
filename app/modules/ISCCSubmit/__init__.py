@@ -18,6 +18,7 @@ CONFIG_COMMAND = "iscc配置"
 HELP_COMMAND = "iscc帮助"
 SESSION_COMMAND = "isccsession"
 NONCE_COMMAND = "isccnonce"
+REFRESH_COMMAND = "iscc刷新"
 FLAG_PATTERN = r"^ISCC\{.+\}$"
 
 # 每日自动刷新 session 的北京时间（24 小时制）
@@ -37,6 +38,7 @@ COMMANDS = {
     "ISCC{xxxxx}": "提交 flag 到 ISCC 平台未解题目",
     SESSION_COMMAND: "查询当前 ISCC session",
     NONCE_COMMAND: "查询当前 ISCC 练武题和擂台题 nonce",
+    REFRESH_COMMAND: "立即刷新练武题/擂台题未解题目缓存",
     MONITOR_ADD_COMMAND: "添加监控的擂台赛 team id，用法：isccm添加 <team_id> [备注]",
     MONITOR_REMOVE_COMMAND: "删除监控的擂台赛 team id，用法：isccm删除 <team_id>",
     MONITOR_LIST_COMMAND: "查看当前监控的擂台赛 team id 列表",

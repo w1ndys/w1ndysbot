@@ -17,11 +17,18 @@ from .. import (
     MONITOR_LIST_COMMAND,
     MONITOR_REMOVE_COMMAND,
     NONCE_COMMAND,
+    REFRESH_COMMAND,
     SESSION_COMMAND,
     SWITCH_NAME,
 )
 from .data_manager import DataManager
-from .iscc_client import ISCCClient, ISCCClientError, SubmitResult
+from .iscc_client import (
+    ARENA_TRACK,
+    ISCCClient,
+    ISCCClientError,
+    REGULAR_TRACK,
+    SubmitResult,
+)
 from .monitor_service import MonitorLock, run_monitor_once
 
 
@@ -55,6 +62,9 @@ class PrivateMessageHandler:
                 return
             if self.raw_message.lower() == NONCE_COMMAND.lower():
                 await self._handle_query_nonce()
+                return
+            if self.raw_message == REFRESH_COMMAND:
+                await self._handle_refresh_unsolved()
                 return
             if self.raw_message == MONITOR_LIST_COMMAND:
                 await self._handle_monitor_list()
@@ -104,7 +114,18 @@ class PrivateMessageHandler:
 
         with DataManager() as dm:
             dm.save_account(self.user_id, username, password, session)
-        await self._reply("ISCC 登录成功，账号、密码和 session 已保存。")
+
+        # 登录成功后顺便把未解题缓存建起来，这样后续提交 flag 可以直接走缓存
+        ok, regular_n, arena_n, err = await self._refresh_unsolved_cache(client)
+
+        msg_lines = ["ISCC 登录成功，账号、密码和 session 已保存。"]
+        if ok:
+            msg_lines.append(
+                f"未解题缓存已建立：练武题 {regular_n} 题，擂台题 {arena_n} 题。"
+            )
+        elif err:
+            msg_lines.append(f"未解题缓存建立失败：{err}")
+        await self._reply("\n".join(msg_lines))
 
     async def _handle_submit_flag(self):
         with DataManager() as dm:
@@ -115,10 +136,103 @@ class PrivateMessageHandler:
 
         await self._reply("已开始提交 flag，请等待结果。")
         client = await self._ensure_client(account)
-        results = await client.submit_flag_to_unsolved(self.raw_message)
+
+        # 优先用缓存；任一赛道缺缓存时，现场拉一次并落库，保证结果准。
+        prefetched = await self._resolve_unsolved_ids(client)
+
+        results = await client.submit_flag_to_unsolved(
+            self.raw_message, prefetched_ids=prefetched
+        )
         await self._save_session(client.session_cookie)
+        self._update_cache_after_submit(results)
         await self._refresh_nonces(client, account)
         await self._reply(self._format_results(results))
+
+    async def _resolve_unsolved_ids(
+        self, client: ISCCClient
+    ) -> dict[str, list[int]]:
+        """读取未解题缓存；缓存缺失时实时拉一次并落库。出错时返回空 dict 走兜底分支。"""
+        prefetched: dict[str, list[int]] = {}
+        missing_tracks: list[str] = []
+        with DataManager() as dm:
+            for track in (REGULAR_TRACK, ARENA_TRACK):
+                ids = dm.get_unsolved_ids(self.user_id, track)
+                if ids is None:
+                    missing_tracks.append(track)
+                else:
+                    prefetched[track] = ids
+
+        if not missing_tracks:
+            return prefetched
+
+        try:
+            fresh = await client.fetch_unsolved_ids()
+        except Exception as e:
+            logger.warning(f"[{MODULE_NAME}]flag 提交前拉取未解题失败: {e}")
+            # 让 submit_flag_to_unsolved 自己走兜底的实时拉路径，同时给已有缓存留着
+            return prefetched
+
+        with DataManager() as dm:
+            for track in (REGULAR_TRACK, ARENA_TRACK):
+                if track in fresh:
+                    dm.save_unsolved_ids(self.user_id, track, fresh[track])
+        for track in missing_tracks:
+            prefetched[track] = fresh.get(track, [])
+        return prefetched
+
+    def _update_cache_after_submit(self, results: list[SubmitResult]):
+        """把刚被判为"正确/已解决"的题目从未解缓存里摘掉。"""
+        solved_map: dict[str, list[int]] = {REGULAR_TRACK: [], ARENA_TRACK: []}
+        for item in results:
+            if item.status in {"1", "2"} and item.challenge_id > 0:
+                solved_map.setdefault(item.track, []).append(item.challenge_id)
+        if not any(solved_map.values()):
+            return
+        with DataManager() as dm:
+            for track, ids in solved_map.items():
+                if ids:
+                    dm.remove_unsolved_ids(self.user_id, track, ids)
+
+    async def _refresh_unsolved_cache(
+        self, client: ISCCClient
+    ) -> tuple[bool, int, int, str]:
+        """主动刷新未解题缓存，返回 (是否成功, 练武未解数, 擂台未解数, 错误信息)。"""
+        try:
+            fresh = await client.fetch_unsolved_ids()
+        except Exception as e:
+            logger.warning(f"[{MODULE_NAME}]刷新未解题缓存失败: {e}")
+            return False, 0, 0, str(e)
+        with DataManager() as dm:
+            dm.save_unsolved_ids(self.user_id, REGULAR_TRACK, fresh.get(REGULAR_TRACK, []))
+            dm.save_unsolved_ids(self.user_id, ARENA_TRACK, fresh.get(ARENA_TRACK, []))
+        await self._save_session(client.session_cookie)
+        return True, len(fresh.get(REGULAR_TRACK, [])), len(fresh.get(ARENA_TRACK, [])), ""
+
+    async def _handle_refresh_unsolved(self):
+        with DataManager() as dm:
+            account = dm.get_account(self.user_id)
+        if not account:
+            await self._reply("尚未配置 ISCC 账号，请先发送：iscc配置 <账号> <密码>")
+            return
+
+        await self._reply("正在刷新未解题缓存，请稍候...")
+        client = await self._ensure_client(account)
+        ok, regular_n, arena_n, err = await self._refresh_unsolved_cache(client)
+        if ok:
+            with DataManager() as dm:
+                regular_meta = dm.get_unsolved_meta(self.user_id, REGULAR_TRACK)
+                arena_meta = dm.get_unsolved_meta(self.user_id, ARENA_TRACK)
+            ts = (
+                regular_meta and regular_meta.get("updated_at")
+            ) or (arena_meta and arena_meta.get("updated_at")) or "刚刚"
+            await self._reply(
+                "未解题缓存已刷新\n"
+                f"练武题：{regular_n} 题未解\n"
+                f"擂台题：{arena_n} 题未解\n"
+                f"更新时间：{ts}"
+            )
+        else:
+            await self._reply(f"刷新未解题缓存失败：{err}")
 
     async def _handle_query_session(self):
         with DataManager() as dm:
@@ -245,13 +359,15 @@ class PrivateMessageHandler:
             "ISCC{xxxxx}：提交 flag 到练武题和擂台题所有未解题目\n"
             f"{SESSION_COMMAND}：查询当前 ISCC session\n"
             f"{NONCE_COMMAND}：查询当前练武题和擂台题 nonce\n"
+            f"{REFRESH_COMMAND}：立即刷新练武题/擂台题未解题目缓存\n"
             f"{MONITOR_ADD_COMMAND} <team_id> [备注]：添加擂台赛监控目标\n"
             f"{MONITOR_REMOVE_COMMAND} <team_id>：删除擂台赛监控目标\n"
             f"{MONITOR_LIST_COMMAND}：查看擂台赛监控目标列表\n"
             f"{MONITOR_CHECK_COMMAND}：立即触发一次擂台赛监控轮询\n"
             f"{SWITCH_NAME}{MENU_COMMAND}：查看模块菜单\n"
-            "说明：开启模块并配置好账号后，心跳会驱动 session 保活/每日刷新；\n"
-            "同时会按节流间隔轮询所有监控目标的擂台赛解题详情，新通过题目会私聊通知管理员。"
+            "说明：开启模块并配置好账号后，心跳会驱动 session 保活/每日刷新，\n"
+            "同时定期刷新未解题目缓存；收到 flag 时会直接对缓存中的未解题目批量提交。\n"
+            "擂台赛监控会按节流间隔轮询所有监控目标的解题详情，新通过题目会私聊通知管理员。"
         )
 
     # ==================== 擂台赛监控命令 ====================
