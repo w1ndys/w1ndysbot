@@ -47,3 +47,11 @@ Agent 在任务执行过程中发现的条目应遵循以下格式：
   - `app/handle_events.py` 会动态加载 `app/modules/*/main.py`，模块需要在 `__init__.py` 中声明 `MODULE_ENABLED`、`MODULE_NAME`、`SWITCH_NAME` 等元信息。
   - 群开关命令通常在模块的 `handlers/handle_message_group.py` 内处理，使用 `handle_module_group_switch` 和 `is_group_switch_on` 控制模块是否响应群消息。
   - 模块菜单命令通过 `SWITCH_NAME + MENU_COMMAND` 触发，并由 `MenuManager.get_module_commands_text(MODULE_NAME)` 生成说明文本。
+
+[ISCC 提交 flag 的实体解码约定]
+- Date: 2026-05-13
+- Context: Agent 在修复 ISCCSubmit 提交异常时发现
+- Category: 代码模式
+- Instructions:
+  - `ISCCSubmit` 模块在从消息中提取 flag 以后，需要先做 HTML 实体解码，再进入后续提交流程。
+  - 私聊消息里的 `&amp;` 之类实体会被转成原始字符后再提交，避免把编码后的字符串直接发送到 ISCC 平台。
