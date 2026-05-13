@@ -29,6 +29,19 @@ class ChallengeContext:
     challenge_ids: list[int]
 
 
+# 赛道标签 -> (未解题提交前缀 / referer 页面)
+REGULAR_TRACK = "练武题"
+ARENA_TRACK = "擂台题"
+TRACK_SUBMIT_PATH = {
+    REGULAR_TRACK: "/chal",
+    ARENA_TRACK: "/are",
+}
+TRACK_REFERER_PATH = {
+    REGULAR_TRACK: "/challenges",
+    ARENA_TRACK: "/arena",
+}
+
+
 @dataclass
 class SubmitResult:
     track: str
@@ -58,7 +71,19 @@ class TeamArenaSnapshot:
 
 
 class ISCCClientError(Exception):
-    pass
+    """ISCC 客户端异常。
+
+    - `status_code` 为 HTTP 状态码（可用时），便于调用方区分短暂性服务端错误（5xx）与
+      业务错误（如登录失败、nonce 过期等）。
+    """
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+    @property
+    def is_transient_server_error(self) -> bool:
+        return self.status_code is not None and 500 <= self.status_code < 600
 
 
 class ISCCClient:
@@ -84,7 +109,10 @@ class ISCCClient:
                 },
             ) as response:
                 if response.status >= 400:
-                    raise ISCCClientError(f"登录失败，HTTP 状态码 {response.status}")
+                    raise ISCCClientError(
+                        f"登录失败，HTTP 状态码 {response.status}",
+                        status_code=response.status,
+                    )
                 cookie = self._extract_session_cookie(response)
                 if not cookie:
                     raise ISCCClientError("登录失败，响应中未返回 session")
@@ -188,44 +216,81 @@ class ISCCClient:
                 return table
         return None
 
-    async def submit_flag_to_unsolved(self, flag: str) -> list[SubmitResult]:
-        async with self._operation_session():
-            regular_result, arena_result = await asyncio.gather(self._regular_context(), self._arena_context(), return_exceptions=True)
-            contexts = []
-            errors = []
-            for track, result in (("练武题", regular_result), ("擂台题", arena_result)):
-                if isinstance(result, Exception):
-                    errors.append(SubmitResult(track, 0, "error", f"获取题目失败：{result}"))
-                else:
-                    contexts.append(result)
+    async def submit_flag_to_unsolved(
+        self,
+        flag: str,
+        prefetched_ids: dict[str, list[int]] | None = None,
+    ) -> list[SubmitResult]:
+        """对当前所有未解题目提交 flag。
 
-            results = []
+        - `prefetched_ids` 传入 `{"练武题": [...], "擂台题": [...]}` 时，直接使用该列表，
+          不再实时拉取。缓存未命中的赛道会回退到实时拉取（保持旧逻辑兼容）。
+        """
+        prefetched_ids = prefetched_ids or {}
+        async with self._operation_session():
+            contexts: list[ChallengeContext] = []
+            errors: list[SubmitResult] = []
+
+            for track in (REGULAR_TRACK, ARENA_TRACK):
+                ids = prefetched_ids.get(track)
+                if ids is not None:
+                    contexts.append(
+                        ChallengeContext(track, TRACK_SUBMIT_PATH[track], sorted(set(ids)))
+                    )
+                    continue
+                try:
+                    if track == REGULAR_TRACK:
+                        contexts.append(await self._regular_context())
+                    else:
+                        contexts.append(await self._arena_context())
+                except Exception as e:
+                    errors.append(SubmitResult(track, 0, "error", f"获取题目失败：{e}"))
+
+            results: list[SubmitResult] = []
             for context in contexts:
                 for challenge_id in context.challenge_ids:
                     results.append(await self._submit_challenge(context, challenge_id, flag))
             return [*errors, *results]
 
+    async def fetch_unsolved_ids(self) -> dict[str, list[int]]:
+        """拉取当前账号在两个赛道上的未解题 id，返回 `{"练武题": [...], "擂台题": [...]}`。
+
+        任一赛道失败时把异常包装成 ISCCClientError 抛出（由调用侧决定是否整体失败或部分保留）。
+        """
+        async with self._operation_session():
+            regular_ctx, arena_ctx = await asyncio.gather(
+                self._regular_context(), self._arena_context()
+            )
+            return {
+                REGULAR_TRACK: list(regular_ctx.challenge_ids),
+                ARENA_TRACK: list(arena_ctx.challenge_ids),
+            }
+
     async def _regular_context(self) -> ChallengeContext:
-        html = await self._request_text("GET", "/challenges", referer=f"{self.base_url}/")
-        nonce = self._extract_nonce(html)
-        team_id = self._extract_team_id(html)
-        if not nonce or not team_id:
-            raise ISCCClientError("获取练武题页面失败，缺少 nonce 或队伍信息")
-        challenge_ids = self._extract_regular_challenge_ids(html)
-        solved_ids = await self._regular_solved_ids(team_id)
-        return ChallengeContext("练武题", "/chal", sorted(challenge_ids - solved_ids))
+        challenge_ids, solved_ids = await asyncio.gather(
+            self._regular_challenge_ids(), self._regular_solved_ids()
+        )
+        return ChallengeContext(REGULAR_TRACK, TRACK_SUBMIT_PATH[REGULAR_TRACK], sorted(challenge_ids - solved_ids))
 
     async def _arena_context(self) -> ChallengeContext:
-        html = await self._request_text("GET", "/arena", referer=f"{self.base_url}/")
-        nonce = self._extract_nonce(html)
-        if not nonce:
-            raise ISCCClientError("获取擂台题页面失败，缺少 nonce")
         challenge_ids, solved_ids = await asyncio.gather(self._arena_challenge_ids(), self._arena_solved_ids())
-        return ChallengeContext("擂台题", "/are", sorted(challenge_ids - solved_ids))
+        return ChallengeContext(ARENA_TRACK, TRACK_SUBMIT_PATH[ARENA_TRACK], sorted(challenge_ids - solved_ids))
 
-    async def _regular_solved_ids(self, team_id: str) -> set[int]:
-        data = await self._request_json("GET", f"/solves/{team_id}", referer=f"{self.base_url}/team/{team_id}")
+    async def _regular_solved_ids(self) -> set[int]:
+        """当前登录账号已解的练武题 id，走 session 维度的 /solves 接口。"""
+        data = await self._request_json("GET", "/solves", referer=f"{self.base_url}/challenges")
         return {int(item["chalid"]) for item in data.get("solves", []) if str(item.get("chalid", "")).isdigit()}
+
+    async def _regular_challenge_ids(self) -> set[int]:
+        data = await self._request_json("GET", "/chals", referer=f"{self.base_url}/challenges")
+        ids: set[int] = set()
+        # /chals 返回结构常见为 {"game": [...]} 或 {"challenges": [...]}，做兼容
+        for key in ("game", "challenges"):
+            for item in data.get(key, []) or []:
+                cid = item.get("id") if isinstance(item, dict) else None
+                if str(cid).isdigit():
+                    ids.add(int(cid))
+        return ids
 
     async def _arena_challenge_ids(self) -> set[int]:
         data = await self._request_json("GET", "/arenas", referer=f"{self.base_url}/arena")
@@ -238,11 +303,12 @@ class ISCCClient:
     async def _submit_challenge(self, context: ChallengeContext, challenge_id: int, flag: str) -> SubmitResult:
         try:
             nonce = await self._get_nonce_for_track(context.track)
+            referer_path = TRACK_REFERER_PATH.get(context.track, "/")
             text = await self._request_text(
                 "POST",
                 f"{context.submit_path}/{challenge_id}",
                 data={"key": flag, "nonce": nonce},
-                referer=f"{self.base_url}/arena" if context.track == "擂台题" else f"{self.base_url}/challenges",
+                referer=f"{self.base_url}{referer_path}",
                 ajax=True,
             )
             status = text.strip()
@@ -251,7 +317,7 @@ class ISCCClient:
             return SubmitResult(context.track, challenge_id, "error", f"提交异常：{e}")
 
     async def _get_nonce_for_track(self, track: str) -> str:
-        path = "/arena" if track == "擂台题" else "/challenges"
+        path = TRACK_REFERER_PATH.get(track, "/challenges")
         html = await self._request_text("GET", path, referer=f"{self.base_url}/")
         nonce = self._extract_nonce(html)
         if not nonce:
@@ -264,7 +330,10 @@ class ISCCClient:
             text = await response.text()
             self._sync_session_cookie()
             if response.status >= 400:
-                raise ISCCClientError(f"{method} {path} 失败，HTTP 状态码 {response.status}")
+                raise ISCCClientError(
+                    f"{method} {path} 失败，HTTP 状态码 {response.status}",
+                    status_code=response.status,
+                )
             if self._looks_like_login_page(text):
                 raise ISCCClientError("登录状态失效")
             return text
@@ -274,7 +343,10 @@ class ISCCClient:
         async with self._request_session().request(method, f"{self.base_url}{path}", headers=headers) as response:
             self._sync_session_cookie()
             if response.status >= 400:
-                raise ISCCClientError(f"{method} {path} 失败，HTTP 状态码 {response.status}")
+                raise ISCCClientError(
+                    f"{method} {path} 失败，HTTP 状态码 {response.status}",
+                    status_code=response.status,
+                )
             return await response.json(content_type=None)
 
     @asynccontextmanager
@@ -339,12 +411,6 @@ class ISCCClient:
     def _extract_team_id(self, html: str) -> str:
         match = re.search(r'href=["\']/team/([0-9a-fA-F]+)["\']', html)
         return match.group(1) if match else ""
-
-    def _extract_regular_challenge_ids(self, html: str) -> set[int]:
-        ids = {int(value) for value in re.findall(r'href=["\']/chal/(\d+)["\']', html)}
-        ids.update(int(value) for value in re.findall(r'data-id=["\'](\d+)["\']', html))
-        ids.update(int(value) for value in re.findall(r'id=["\']chal-(\d+)["\']', html))
-        return ids
 
     def _looks_like_login_page(self, text: str) -> bool:
         lowered = text.lower()

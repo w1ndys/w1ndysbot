@@ -9,7 +9,7 @@ from utils.generate import generate_text_message
 
 from .. import DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE, MODULE_NAME
 from .data_manager import DataManager
-from .iscc_client import ISCCClient
+from .iscc_client import ARENA_TRACK, ISCCClient, ISCCClientError, REGULAR_TRACK
 from .monitor_service import MonitorLock, run_monitor_once
 
 
@@ -116,31 +116,51 @@ class MetaEventHandler:
     async def _keep_account_alive(self, account: dict):
         user_id = str(account["user_id"])
         client = ISCCClient(account.get("session", ""))
+        keep_alive_ok = False
         try:
             await client.keep_alive_arena_score()
-            return
+            keep_alive_ok = True
         except Exception as e:
             logger.warning(f"[{MODULE_NAME}]ISCC session 保活失败，准备重新登录: {e}")
 
-        try:
-            session = await client.login(account["username"], account["password"])
-            with DataManager() as dm:
-                dm.save_session(user_id, session)
-            await send_private_msg(
-                self.websocket,
-                user_id,
-                [generate_text_message(
-                    "ISCC 登录状态已过期，机器人已自动重新登录并刷新 session。\n"
-                    f"新的 session：{session}"
-                )],
-            )
-        except Exception as e:
-            logger.error(f"[{MODULE_NAME}]ISCC 自动重新登录失败: {e}")
-            await send_private_msg(
-                self.websocket,
-                user_id,
-                [generate_text_message(f"ISCC 登录状态已过期，自动重新登录失败：{e}")],
-            )
+        if not keep_alive_ok:
+            try:
+                session = await client.login(account["username"], account["password"])
+                with DataManager() as dm:
+                    dm.save_session(user_id, session)
+                await send_private_msg(
+                    self.websocket,
+                    user_id,
+                    [generate_text_message(
+                        "ISCC 登录状态已过期，机器人已自动重新登录并刷新 session。\n"
+                        f"新的 session：{session}"
+                    )],
+                )
+                keep_alive_ok = True
+            except ISCCClientError as e:
+                if e.is_transient_server_error:
+                    # 5xx 视为对端临时不可用，等下个心跳自动重试，不打扰管理员
+                    logger.warning(
+                        f"[{MODULE_NAME}]ISCC 重新登录遇到服务端 {e.status_code}，"
+                        "静默等待下个心跳重试"
+                    )
+                else:
+                    logger.error(f"[{MODULE_NAME}]ISCC 自动重新登录失败: {e}")
+                    await send_private_msg(
+                        self.websocket,
+                        user_id,
+                        [generate_text_message(f"ISCC 登录状态已过期，自动重新登录失败：{e}")],
+                    )
+            except Exception as e:
+                logger.error(f"[{MODULE_NAME}]ISCC 自动重新登录失败: {e}")
+                await send_private_msg(
+                    self.websocket,
+                    user_id,
+                    [generate_text_message(f"ISCC 登录状态已过期，自动重新登录失败：{e}")],
+                )
+
+        if keep_alive_ok:
+            await self._refresh_unsolved_cache(user_id, client)
 
     async def _daily_refresh_account(self, account: dict, beijing_now: datetime):
         user_id = str(account["user_id"])
@@ -151,6 +171,25 @@ class MetaEventHandler:
 
         try:
             session = await client.login(username, password)
+        except ISCCClientError as e:
+            if e.is_transient_server_error:
+                # 5xx 时不通知管理员，并清掉当日已触发标记，让下一次心跳继续重试
+                logger.warning(
+                    f"[{MODULE_NAME}]ISCC 每日定时登录遇到服务端 {e.status_code}，"
+                    "静默等待下个心跳重试"
+                )
+                with DataManager() as dm:
+                    dm.set_meta(DAILY_REFRESH_META_KEY, "")
+                return
+            logger.error(f"[{MODULE_NAME}]ISCC 每日定时登录失败: {e}")
+            await send_private_msg(
+                self.websocket,
+                user_id,
+                [generate_text_message(
+                    f"[ISCC 每日定时刷新] 北京时间 {timestamp} 自动登录失败：{e}"
+                )],
+            )
+            return
         except Exception as e:
             logger.error(f"[{MODULE_NAME}]ISCC 每日定时登录失败: {e}")
             await send_private_msg(
@@ -185,8 +224,30 @@ class MetaEventHandler:
         if regular_nonce or arena_nonce:
             lines.append(f"练武题 nonce：{regular_nonce or '（未获取）'}")
             lines.append(f"擂台题 nonce：{arena_nonce or '（未获取）'}")
+
+        # 每日刷新顺便重建一次未解题缓存，减少一天内再去实时拉取
+        regular_unsolved, arena_unsolved = await self._refresh_unsolved_cache(user_id, client)
+        if regular_unsolved is not None and arena_unsolved is not None:
+            lines.append(
+                f"未解题缓存：练武题 {regular_unsolved} 题 / 擂台题 {arena_unsolved} 题"
+            )
+
         await send_private_msg(
             self.websocket,
             user_id,
             [generate_text_message("\n".join(lines))],
         )
+
+    async def _refresh_unsolved_cache(
+        self, user_id: str, client: ISCCClient
+    ) -> tuple[int | None, int | None]:
+        """调用 client.fetch_unsolved_ids 并落库；失败返回 (None, None)。"""
+        try:
+            fresh = await client.fetch_unsolved_ids()
+        except Exception as e:
+            logger.warning(f"[{MODULE_NAME}]刷新未解题缓存失败: {e}")
+            return None, None
+        with DataManager() as dm:
+            dm.save_unsolved_ids(user_id, REGULAR_TRACK, fresh.get(REGULAR_TRACK, []))
+            dm.save_unsolved_ids(user_id, ARENA_TRACK, fresh.get(ARENA_TRACK, []))
+        return len(fresh.get(REGULAR_TRACK, [])), len(fresh.get(ARENA_TRACK, []))
