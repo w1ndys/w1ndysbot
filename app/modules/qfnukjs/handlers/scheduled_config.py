@@ -71,3 +71,13 @@ def set_last_run_date(date_text):
     config = load_config()
     config["last_run_date"] = str(date_text)
     save_config(config)
+
+
+def get_api_key():
+    return str(load_config().get("api_key", "")).strip()
+
+
+def set_api_key(api_key):
+    config = load_config()
+    config["api_key"] = str(api_key).strip()
+    save_config(config)
