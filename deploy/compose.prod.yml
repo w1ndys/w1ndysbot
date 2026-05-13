@@ -1,5 +1,10 @@
 services:
   w1ndysbot:
+    # 远程服务器按实际源码本地构建镜像，避免在本地跨架构打包后再加载。
+    # 从 /opt/w1ndysbot 目录构建，Dockerfile 位于 build context 根。
+    build:
+      context: /opt/w1ndysbot
+      dockerfile: Dockerfile
     image: ${BOT_IMAGE:-w1ndysbot:latest}
     container_name: w1ndysbot
     restart: unless-stopped

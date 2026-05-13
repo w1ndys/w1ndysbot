@@ -221,15 +221,34 @@ class ISCCClient:
         flag: str,
         prefetched_ids: dict[str, list[int]] | None = None,
     ) -> list[SubmitResult]:
-        """对当前所有未解题目提交 flag。
+        """对当前所有未解题目提交单个 flag。
 
         - `prefetched_ids` 传入 `{"练武题": [...], "擂台题": [...]}` 时，直接使用该列表，
           不再实时拉取。缓存未命中的赛道会回退到实时拉取（保持旧逻辑兼容）。
         """
+        grouped = await self.submit_flags_to_unsolved([flag], prefetched_ids)
+        # 保持老调用方签名：返回单个 flag 的结果列表。
+        return grouped[0][1] if grouped else []
+
+    async def submit_flags_to_unsolved(
+        self,
+        flags: list[str],
+        prefetched_ids: dict[str, list[int]] | None = None,
+    ) -> list[tuple[str, list[SubmitResult]]]:
+        """对当前所有未解题目并发提交一批 flag。
+
+        - 拿到"哪些题未解"只做一次（同一 session 下 prefetched 缺失的赛道才补拉）。
+        - 各 flag 之间 `asyncio.gather` 并发；同一 flag 内部仍串行遍历题目，避免触发
+          平台"提交过快"（status=3）与 nonce 冲突。
+        - 返回值保持与 flags 同序：`[(flag, [SubmitResult, ...]), ...]`。
+        """
         prefetched_ids = prefetched_ids or {}
+        if not flags:
+            return []
+
         async with self._operation_session():
             contexts: list[ChallengeContext] = []
-            errors: list[SubmitResult] = []
+            shared_errors: list[SubmitResult] = []
 
             for track in (REGULAR_TRACK, ARENA_TRACK):
                 ids = prefetched_ids.get(track)
@@ -244,13 +263,21 @@ class ISCCClient:
                     else:
                         contexts.append(await self._arena_context())
                 except Exception as e:
-                    errors.append(SubmitResult(track, 0, "error", f"获取题目失败：{e}"))
+                    shared_errors.append(SubmitResult(track, 0, "error", f"获取题目失败：{e}"))
 
-            results: list[SubmitResult] = []
-            for context in contexts:
-                for challenge_id in context.challenge_ids:
-                    results.append(await self._submit_challenge(context, challenge_id, flag))
-            return [*errors, *results]
+            async def submit_one(flag: str) -> list[SubmitResult]:
+                results: list[SubmitResult] = []
+                for context in contexts:
+                    for challenge_id in context.challenge_ids:
+                        results.append(
+                            await self._submit_challenge(context, challenge_id, flag)
+                        )
+                return [*shared_errors, *results]
+
+            per_flag_results = await asyncio.gather(
+                *(submit_one(flag) for flag in flags)
+            )
+            return list(zip(flags, per_flag_results))
 
     async def fetch_unsolved_ids(self) -> dict[str, list[int]]:
         """拉取当前账号在两个赛道上的未解题 id，返回 `{"练武题": [...], "擂台题": [...]}`。
