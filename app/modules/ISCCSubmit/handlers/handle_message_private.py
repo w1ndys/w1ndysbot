@@ -1,3 +1,4 @@
+import html
 import re
 
 from api.message import send_private_msg
@@ -165,6 +166,7 @@ class PrivateMessageHandler:
         seen: set[str] = set()
         ordered: list[str] = []
         for flag in re.findall(FLAG_PATTERN, message):
+            flag = html.unescape(flag)
             if flag in seen:
                 continue
             seen.add(flag)
