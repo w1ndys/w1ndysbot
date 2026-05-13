@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 
 import aiohttp
 
@@ -11,11 +11,13 @@ from logger import logger
 from utils.auth import is_system_admin
 from utils.generate import generate_reply_message, generate_text_message
 from .empty_classroom_service import query_empty_classroom_text
-from .scheduled_config import get_group_buildings, set_group_buildings
+from .scheduled_config import get_group_buildings, get_last_run_date, set_group_buildings
 
 
 TRIGGER_KEYWORD = "空教室"
 BUILDING_CONFIG_COMMAND = "定时空教室教学楼"
+SCHEDULE_STATUS_COMMAND = "定时空教室状态"
+DAILY_PUSH_TIME = time(7, 30)
 PENDING_NOTE_PREFIX = f"{MODULE_NAME}_empty_classroom_pending"
 PENDING_MESSAGES = {}
 
@@ -126,6 +128,44 @@ class GroupMessageHandler:
         )
         return True
 
+    async def _handle_schedule_status_command(self):
+        command = f"{SWITCH_NAME}{SCHEDULE_STATUS_COMMAND}"
+        if self.raw_message.strip().lower() != command.lower():
+            return False
+
+        now = datetime.now()
+        last_run_date = get_last_run_date()
+        buildings = get_group_buildings(self.group_id)
+        switch_on = is_group_switch_on(self.group_id, MODULE_NAME)
+        today = now.strftime("%Y-%m-%d")
+
+        if last_run_date == today:
+            trigger_text = "今日已提醒"
+        elif now.time() >= DAILY_PUSH_TIME:
+            trigger_text = "当前已过提醒时间，下一次心跳会尝试补发"
+        else:
+            trigger_text = "当前未到提醒时间"
+
+        lines = [
+            "qfnukjs 定时空教室状态",
+            f"群号：{self.group_id}",
+            f"群开关：{'开启' if switch_on else '关闭'}",
+            f"教学楼列表：{'、'.join(buildings) if buildings else '未配置'}",
+            f"当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"提醒时间：{DAILY_PUSH_TIME.strftime('%H:%M')}",
+            f"今日提醒状态：{trigger_text}",
+            f"最近提醒日期：{last_run_date or '无'}",
+        ]
+        await send_group_msg(
+            self.websocket,
+            self.group_id,
+            [
+                generate_reply_message(self.message_id),
+                generate_text_message("\n".join(lines)),
+            ],
+        )
+        return True
+
     async def _send_pending_message(self):
         pending_id = uuid.uuid4().hex
         PENDING_MESSAGES[pending_id] = {"message_id": None, "done": False}
@@ -189,6 +229,9 @@ class GroupMessageHandler:
                 return
 
             if await self._handle_building_config_command():
+                return
+
+            if await self._handle_schedule_status_command():
                 return
 
             if not is_group_switch_on(self.group_id, MODULE_NAME):
