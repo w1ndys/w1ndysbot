@@ -37,7 +37,7 @@ MONITOR_CHECK_COMMAND = "isccm检测"
 COMMANDS = {
     SWITCH_NAME: "系统管理员开关 ISCC 自动提交与擂台赛监控模块",
     CONFIG_COMMAND: "配置 ISCC 账号，用法：iscc配置 <账号> <密码>",
-    "ISCC{xxxxx}": "提交 flag 到 ISCC 平台未解题目（消息中包含 ISCC{...} 即可，无需独立成行）",
+    "ISCC{xxxxx}": "提交 flag 到 ISCC 平台未解题目（消息中可包含多个 ISCC{...}，会并发提交，无需独立成行）",
     SESSION_COMMAND: "查询当前 ISCC session",
     NONCE_COMMAND: "查询当前 ISCC 练武题和擂台题 nonce",
     REFRESH_COMMAND: "立即刷新练武题/擂台题未解题目缓存",
