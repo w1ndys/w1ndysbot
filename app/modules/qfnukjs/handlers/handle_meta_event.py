@@ -37,13 +37,23 @@ class MetaEventHandler:
 
     async def handle(self):
         try:
-            if self.post_type == "meta_event" and self.meta_event_type == "heartbeat":
+            if self.post_type != "meta_event":
+                return
+
+            if self.meta_event_type == "lifecycle":
+                await self.handle_lifecycle()
+            elif self.meta_event_type == "heartbeat":
                 await self.handle_heartbeat()
         except Exception as e:
             logger.error(f"[{MODULE_NAME}]处理元事件失败: {e}")
 
+    async def handle_lifecycle(self):
+        await self._run_due_daily_push(datetime.now())
+
     async def handle_heartbeat(self):
-        now = self._get_event_datetime()
+        await self._run_due_daily_push(self._get_event_datetime())
+
+    async def _run_due_daily_push(self, now):
         if now.time() < DAILY_PUSH_TIME:
             return
 
@@ -64,24 +74,52 @@ class MetaEventHandler:
             return datetime.now()
 
     async def _run_daily_push(self, today):
-        group_ids = sorted(str(group_id) for group_id in get_all_enabled_groups(MODULE_NAME))
-        for group_id in group_ids:
-            buildings = get_group_buildings(group_id)
-            if not buildings:
-                continue
+        group_buildings = self._get_group_buildings_to_push()
+        if not group_buildings:
+            logger.info(f"[{MODULE_NAME}]今日定时空教室推送无可用群配置")
+            return
 
+        query_cache = await self._build_query_cache(group_buildings)
+        for group_id, buildings in group_buildings.items():
             logger.info(
                 f"[{MODULE_NAME}]开始推送群{group_id}每日空教室，教学楼: {buildings}"
             )
-            await self._send_group_daily_push(group_id, buildings, today)
+            await self._send_group_daily_push(group_id, buildings, today, query_cache)
 
-    async def _send_group_daily_push(self, group_id, buildings, today):
+    def _get_group_buildings_to_push(self):
+        group_buildings = {}
+        group_ids = sorted(
+            str(group_id) for group_id in get_all_enabled_groups(MODULE_NAME)
+        )
+        for group_id in group_ids:
+            buildings = get_group_buildings(group_id)
+            if buildings:
+                group_buildings[group_id] = buildings
+        return group_buildings
+
+    async def _build_query_cache(self, group_buildings):
+        cache = {}
+        unique_buildings = sorted(
+            {
+                building
+                for buildings in group_buildings.values()
+                for building in buildings
+            }
+        )
+        for building in unique_buildings:
+            cache[building] = []
+            for period_label, ranges in PERIOD_QUERIES:
+                range_results = await self._query_period_classrooms(building, ranges)
+                cache[building].append((period_label, range_results))
+        return cache
+
+    async def _send_group_daily_push(self, group_id, buildings, today, query_cache):
         summary_lines = [f"{today} 定时空教室数量汇总"]
         for building in buildings:
-            period_results = []
-            for period_label, ranges in PERIOD_QUERIES:
-                classrooms = await self._query_period_classrooms(building, ranges)
-                period_results.append((period_label, classrooms))
+            period_results = query_cache.get(building, [])
+            if not period_results:
+                logger.error(f"[{MODULE_NAME}]群{group_id}缺少{building}定时查询缓存")
+                continue
 
             await self._send_building_forward_message(group_id, building, period_results)
             summary_lines.append(self._format_building_summary(building, period_results))
