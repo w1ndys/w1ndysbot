@@ -353,12 +353,10 @@ class ISCCClient:
     async def _regular_challenges(self) -> dict[int, str]:
         data = await self._request_json("GET", "/chals", referer=f"{self.base_url}/challenges")
         challenges: dict[int, str] = {}
-        # /chals 返回结构常见为 {"game": [...]} 或 {"challenges": [...]}，做兼容
-        for key in ("game", "challenges"):
-            for item in data.get(key, []) or []:
-                cid = item.get("id") if isinstance(item, dict) else None
-                if str(cid).isdigit():
-                    challenges[int(cid)] = self._extract_challenge_name(item)
+        for item in self._iter_challenge_items(data):
+            cid = item.get("id") if isinstance(item, dict) else None
+            if str(cid).isdigit():
+                challenges[int(cid)] = self._extract_challenge_name(item)
         return challenges
 
     async def _arena_challenge_ids(self) -> set[int]:
@@ -367,15 +365,45 @@ class ISCCClient:
     async def _arena_challenges(self) -> dict[int, str]:
         data = await self._request_json("GET", "/arenas", referer=f"{self.base_url}/arena")
         challenges: dict[int, str] = {}
-        for item in data.get("game", []) or []:
+        for item in self._iter_challenge_items(data):
             cid = item.get("id") if isinstance(item, dict) else None
             if str(cid).isdigit():
                 challenges[int(cid)] = self._extract_challenge_name(item)
         return challenges
 
+    def _iter_challenge_items(self, value):
+        if isinstance(value, dict):
+            if self._looks_like_challenge_item(value):
+                yield value
+            for child in value.values():
+                yield from self._iter_challenge_items(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from self._iter_challenge_items(child)
+
+    def _looks_like_challenge_item(self, item: dict) -> bool:
+        if not str(item.get("id", "")).isdigit() or not self._extract_challenge_name(item):
+            return False
+        if not any(isinstance(value, (dict, list)) for value in item.values()):
+            return True
+        return bool(
+            {
+                "category",
+                "type",
+                "solves",
+                "solved_by_me",
+                "max_attempts",
+                "files",
+                "tags",
+                "description",
+                "connection_info",
+            }
+            & set(item)
+        )
+
     @staticmethod
     def _extract_challenge_name(item: dict) -> str:
-        for key in ("name", "title", "chal_name", "challenge", "value"):
+        for key in ("name", "title", "chal_name", "challenge", "value", "题目名称", "题目"):
             value = item.get(key)
             if value:
                 return str(value).strip()
