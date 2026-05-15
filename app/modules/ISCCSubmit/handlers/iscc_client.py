@@ -403,11 +403,22 @@ class ISCCClient:
 
     @staticmethod
     def _extract_challenge_name(item: dict) -> str:
-        for key in ("name", "title", "chal_name", "challenge", "value", "题目名称", "题目"):
+        for key in ("name", "title", "chal_name", "challenge", "题目名称", "题目"):
             value = item.get(key)
             if value:
                 return str(value).strip()
+        value = item.get("value")
+        if value and not ISCCClient._looks_like_score(value):
+            return str(value).strip()
         return ""
+
+    @staticmethod
+    def _looks_like_score(value) -> bool:
+        text = str(value).strip()
+        if not text:
+            return False
+        normalized = text.replace(".", "", 1)
+        return normalized.isdigit()
 
     async def _arena_solved_ids(self) -> set[int]:
         data = await self._request_json("GET", "/arenasolves", referer=f"{self.base_url}/arena")
