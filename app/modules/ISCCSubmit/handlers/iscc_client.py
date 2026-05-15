@@ -321,104 +321,94 @@ class ISCCClient:
             }
 
     async def _regular_context(self) -> ChallengeContext:
-        challenges, solved_ids = await asyncio.gather(
-            self._regular_challenges(), self._regular_solved_ids()
+        html, challenge_ids = await asyncio.gather(
+            self._request_text("GET", "/challenges", referer=f"{self.base_url}/"),
+            self._regular_challenge_ids(),
         )
-        unsolved_ids = sorted(set(challenges) - solved_ids)
+        team_id = self._extract_team_id(html)
+        solved_ids = await self._regular_solved_ids(team_id)
+        unsolved_ids = sorted(challenge_ids - solved_ids)
+        challenge_names = await self._regular_challenge_names(unsolved_ids)
         return ChallengeContext(
             REGULAR_TRACK,
             TRACK_SUBMIT_PATH[REGULAR_TRACK],
             unsolved_ids,
-            {cid: challenges.get(cid, "") for cid in unsolved_ids},
+            challenge_names,
         )
 
     async def _arena_context(self) -> ChallengeContext:
-        challenges, solved_ids = await asyncio.gather(self._arena_challenges(), self._arena_solved_ids())
-        unsolved_ids = sorted(set(challenges) - solved_ids)
+        challenge_ids, solved_ids = await asyncio.gather(self._arena_challenge_ids(), self._arena_solved_ids())
+        unsolved_ids = sorted(challenge_ids - solved_ids)
+        challenge_names = await self._arena_challenge_names(unsolved_ids)
         return ChallengeContext(
             ARENA_TRACK,
             TRACK_SUBMIT_PATH[ARENA_TRACK],
             unsolved_ids,
-            {cid: challenges.get(cid, "") for cid in unsolved_ids},
+            challenge_names,
         )
 
-    async def _regular_solved_ids(self) -> set[int]:
+    async def _regular_solved_ids(self, team_id: str) -> set[int]:
         """当前登录账号已解的练武题 id，走 session 维度的 /solves 接口。"""
-        data = await self._request_json("GET", "/solves", referer=f"{self.base_url}/challenges")
+        if not team_id:
+            return set()
+        data = await self._request_json(
+            "GET",
+            f"/solves/{team_id}",
+            referer=f"{self.base_url}/team/{team_id}",
+        )
         return {int(item["chalid"]) for item in data.get("solves", []) if str(item.get("chalid", "")).isdigit()}
 
     async def _regular_challenge_ids(self) -> set[int]:
-        return set(await self._regular_challenges())
-
-    async def _regular_challenges(self) -> dict[int, str]:
         data = await self._request_json("GET", "/chals", referer=f"{self.base_url}/challenges")
-        challenges: dict[int, str] = {}
-        for item in self._iter_challenge_items(data):
-            cid = item.get("id") if isinstance(item, dict) else None
-            if str(cid).isdigit():
-                challenges[int(cid)] = self._extract_challenge_name(item)
-        return challenges
+        return self._challenge_ids_from_payload(data)
 
-    async def _arena_challenge_ids(self) -> set[int]:
-        return set(await self._arena_challenges())
-
-    async def _arena_challenges(self) -> dict[int, str]:
-        data = await self._request_json("GET", "/arenas", referer=f"{self.base_url}/arena")
-        challenges: dict[int, str] = {}
-        for item in self._iter_challenge_items(data):
-            cid = item.get("id") if isinstance(item, dict) else None
-            if str(cid).isdigit():
-                challenges[int(cid)] = self._extract_challenge_name(item)
-        return challenges
-
-    def _iter_challenge_items(self, value):
-        if isinstance(value, dict):
-            if self._looks_like_challenge_item(value):
-                yield value
-            for child in value.values():
-                yield from self._iter_challenge_items(child)
-        elif isinstance(value, list):
-            for child in value:
-                yield from self._iter_challenge_items(child)
-
-    def _looks_like_challenge_item(self, item: dict) -> bool:
-        if not str(item.get("id", "")).isdigit() or not self._extract_challenge_name(item):
-            return False
-        if not any(isinstance(value, (dict, list)) for value in item.values()):
-            return True
-        return bool(
-            {
-                "category",
-                "type",
-                "solves",
-                "solved_by_me",
-                "max_attempts",
-                "files",
-                "tags",
-                "description",
-                "connection_info",
-            }
-            & set(item)
+    async def _regular_challenge_names(self, challenge_ids: list[int]) -> dict[int, str]:
+        return await self._fetch_challenge_names(
+            challenge_ids,
+            detail_path="/chals/{id}",
+            referer=f"{self.base_url}/challenges",
         )
 
-    @staticmethod
-    def _extract_challenge_name(item: dict) -> str:
-        for key in ("name", "title", "chal_name", "challenge", "题目名称", "题目"):
-            value = item.get(key)
-            if value:
-                return str(value).strip()
-        value = item.get("value")
-        if value and not ISCCClient._looks_like_score(value):
-            return str(value).strip()
-        return ""
+    async def _arena_challenge_ids(self) -> set[int]:
+        data = await self._request_json("GET", "/arenas", referer=f"{self.base_url}/arena")
+        return self._challenge_ids_from_payload(data)
+
+    async def _arena_challenge_names(self, challenge_ids: list[int]) -> dict[int, str]:
+        return await self._fetch_challenge_names(
+            challenge_ids,
+            detail_path="/arenas/{id}",
+            referer=f"{self.base_url}/arena",
+        )
+
+    async def _fetch_challenge_names(
+        self,
+        challenge_ids: list[int],
+        detail_path: str,
+        referer: str,
+    ) -> dict[int, str]:
+        async def fetch_one(challenge_id: int) -> tuple[int, str]:
+            try:
+                data = await self._request_json(
+                    "GET",
+                    detail_path.format(id=challenge_id),
+                    referer=referer,
+                )
+            except Exception:
+                return challenge_id, ""
+            return challenge_id, str(data.get("name") or "").strip()
+
+        pairs = await asyncio.gather(*(fetch_one(cid) for cid in challenge_ids))
+        return {cid: name for cid, name in pairs if name}
 
     @staticmethod
-    def _looks_like_score(value) -> bool:
-        text = str(value).strip()
-        if not text:
-            return False
-        normalized = text.replace(".", "", 1)
-        return normalized.isdigit()
+    def _challenge_ids_from_payload(data: dict) -> set[int]:
+        ids: set[int] = set()
+        for key in ("game", "challenges"):
+            for item in data.get(key, []) or []:
+                cid = item.get("id") if isinstance(item, dict) else None
+                if str(cid).isdigit():
+                    ids.add(int(cid))
+        return ids
 
     async def _arena_solved_ids(self) -> set[int]:
         data = await self._request_json("GET", "/arenasolves", referer=f"{self.base_url}/arena")
