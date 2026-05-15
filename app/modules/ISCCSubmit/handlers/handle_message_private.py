@@ -265,15 +265,27 @@ class PrivateMessageHandler:
             with DataManager() as dm:
                 regular_meta = dm.get_unsolved_meta(self.user_id, REGULAR_TRACK)
                 arena_meta = dm.get_unsolved_meta(self.user_id, ARENA_TRACK)
+                regular_ids = dm.get_unsolved_ids(self.user_id, REGULAR_TRACK) or []
+                arena_ids = dm.get_unsolved_ids(self.user_id, ARENA_TRACK) or []
+                regular_names = dm.get_unsolved_names(self.user_id, REGULAR_TRACK)
+                arena_names = dm.get_unsolved_names(self.user_id, ARENA_TRACK)
             ts = (
                 regular_meta and regular_meta.get("updated_at")
             ) or (arena_meta and arena_meta.get("updated_at")) or "刚刚"
-            await self._reply(
-                "未解题缓存已刷新\n"
-                f"练武题：{regular_n} 题未解\n"
-                f"擂台题：{arena_n} 题未解\n"
-                f"更新时间：{ts}"
-            )
+            lines = [
+                "未解题缓存已刷新",
+                f"练武题：{regular_n} 题未解",
+                f"擂台题：{arena_n} 题未解",
+                f"更新时间：{ts}",
+            ]
+            if regular_ids or arena_ids:
+                lines.append("")
+                lines.append("未解题目：")
+                for cid in regular_ids:
+                    lines.append(f"- {self._format_unsolved_line(REGULAR_TRACK, cid, regular_names.get(cid, ''))}")
+                for cid in arena_ids:
+                    lines.append(f"- {self._format_unsolved_line(ARENA_TRACK, cid, arena_names.get(cid, ''))}")
+            await self._reply("\n".join(lines))
         else:
             await self._reply(f"刷新未解题缓存失败：{err}")
 
@@ -396,8 +408,9 @@ class PrivateMessageHandler:
 
     @staticmethod
     def _format_result_target(item: SubmitResult) -> str:
-        name = f" {item.challenge_name}" if item.challenge_name else ""
-        return f"{item.track} #{item.challenge_id}{name}"
+        if item.challenge_name:
+            return f"{item.track} {item.challenge_name} #{item.challenge_id}"
+        return f"{item.track} #{item.challenge_id}"
 
     def _format_multi_flag_results(
         self, flag_results: list[tuple[str, list[SubmitResult]]]
@@ -437,6 +450,12 @@ class PrivateMessageHandler:
             for item in results:
                 lines.append(f"  {self._format_result_target(item)}: {item.message}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_unsolved_line(track: str, challenge_id: int, challenge_name: str) -> str:
+        if challenge_name:
+            return f"{track} {challenge_name} #{challenge_id}"
+        return f"{track} #{challenge_id}"
 
     def _help_text(self) -> str:
         return (
