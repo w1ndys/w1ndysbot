@@ -243,11 +243,21 @@ class MetaEventHandler:
     ) -> tuple[int | None, int | None]:
         """调用 client.fetch_unsolved_ids 并落库；失败返回 (None, None)。"""
         try:
-            fresh = await client.fetch_unsolved_ids()
+            fresh = await client.fetch_unsolved_challenges()
         except Exception as e:
             logger.warning(f"[{MODULE_NAME}]刷新未解题缓存失败: {e}")
             return None, None
         with DataManager() as dm:
-            dm.save_unsolved_ids(user_id, REGULAR_TRACK, fresh.get(REGULAR_TRACK, []))
-            dm.save_unsolved_ids(user_id, ARENA_TRACK, fresh.get(ARENA_TRACK, []))
+            dm.save_unsolved_ids(
+                user_id,
+                REGULAR_TRACK,
+                list(fresh.get(REGULAR_TRACK, {})),
+                fresh.get(REGULAR_TRACK, {}),
+            )
+            dm.save_unsolved_ids(
+                user_id,
+                ARENA_TRACK,
+                list(fresh.get(ARENA_TRACK, {})),
+                fresh.get(ARENA_TRACK, {}),
+            )
         return len(fresh.get(REGULAR_TRACK, [])), len(fresh.get(ARENA_TRACK, []))
