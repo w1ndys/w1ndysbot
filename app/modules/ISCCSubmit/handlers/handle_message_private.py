@@ -148,10 +148,10 @@ class PrivateMessageHandler:
         client = await self._ensure_client(account)
 
         # 优先用缓存；任一赛道缺缓存时，现场拉一次并落库，保证结果准。
-        prefetched = await self._resolve_unsolved_ids(client)
+        prefetched, prefetched_names = await self._resolve_unsolved_ids(client)
 
         flag_results = await client.submit_flags_to_unsolved(
-            flags, prefetched_ids=prefetched
+            flags, prefetched_ids=prefetched, prefetched_names=prefetched_names
         )
         await self._save_session(client.session_cookie)
         # 用所有 flag 的结果共同刷新缓存，避免被某个 flag 判对后其他 flag 再重复提交。
@@ -175,9 +175,10 @@ class PrivateMessageHandler:
 
     async def _resolve_unsolved_ids(
         self, client: ISCCClient
-    ) -> dict[str, list[int]]:
+    ) -> tuple[dict[str, list[int]], dict[str, dict[int, str]]]:
         """读取未解题缓存；缓存缺失时实时拉一次并落库。出错时返回空 dict 走兜底分支。"""
         prefetched: dict[str, list[int]] = {}
+        prefetched_names: dict[str, dict[int, str]] = {}
         missing_tracks: list[str] = []
         with DataManager() as dm:
             for track in (REGULAR_TRACK, ARENA_TRACK):
@@ -186,24 +187,31 @@ class PrivateMessageHandler:
                     missing_tracks.append(track)
                 else:
                     prefetched[track] = ids
+                    prefetched_names[track] = dm.get_unsolved_names(self.user_id, track)
 
         if not missing_tracks:
-            return prefetched
+            return prefetched, prefetched_names
 
         try:
-            fresh = await client.fetch_unsolved_ids()
+            fresh = await client.fetch_unsolved_challenges()
         except Exception as e:
             logger.warning(f"[{MODULE_NAME}]flag 提交前拉取未解题失败: {e}")
             # 让 submit_flag_to_unsolved 自己走兜底的实时拉路径，同时给已有缓存留着
-            return prefetched
+            return prefetched, prefetched_names
 
         with DataManager() as dm:
             for track in (REGULAR_TRACK, ARENA_TRACK):
                 if track in fresh:
-                    dm.save_unsolved_ids(self.user_id, track, fresh[track])
+                    dm.save_unsolved_ids(
+                        self.user_id,
+                        track,
+                        list(fresh[track]),
+                        fresh[track],
+                    )
         for track in missing_tracks:
-            prefetched[track] = fresh.get(track, [])
-        return prefetched
+            prefetched_names[track] = fresh.get(track, {})
+            prefetched[track] = list(prefetched_names[track])
+        return prefetched, prefetched_names
 
     def _update_cache_after_submit(self, results: list[SubmitResult]):
         """把刚被判为"正确/已解决"的题目从未解缓存里摘掉。"""
@@ -223,13 +231,23 @@ class PrivateMessageHandler:
     ) -> tuple[bool, int, int, str]:
         """主动刷新未解题缓存，返回 (是否成功, 练武未解数, 擂台未解数, 错误信息)。"""
         try:
-            fresh = await client.fetch_unsolved_ids()
+            fresh = await client.fetch_unsolved_challenges()
         except Exception as e:
             logger.warning(f"[{MODULE_NAME}]刷新未解题缓存失败: {e}")
             return False, 0, 0, str(e)
         with DataManager() as dm:
-            dm.save_unsolved_ids(self.user_id, REGULAR_TRACK, fresh.get(REGULAR_TRACK, []))
-            dm.save_unsolved_ids(self.user_id, ARENA_TRACK, fresh.get(ARENA_TRACK, []))
+            dm.save_unsolved_ids(
+                self.user_id,
+                REGULAR_TRACK,
+                list(fresh.get(REGULAR_TRACK, {})),
+                fresh.get(REGULAR_TRACK, {}),
+            )
+            dm.save_unsolved_ids(
+                self.user_id,
+                ARENA_TRACK,
+                list(fresh.get(ARENA_TRACK, {})),
+                fresh.get(ARENA_TRACK, {}),
+            )
         await self._save_session(client.session_cookie)
         return True, len(fresh.get(REGULAR_TRACK, [])), len(fresh.get(ARENA_TRACK, [])), ""
 
@@ -373,8 +391,13 @@ class PrivateMessageHandler:
             f"失败或跳过：{len(failed)} 题",
         ]
         for item in results:
-            lines.append(f"{item.track} #{item.challenge_id}: {item.message}")
+            lines.append(f"{self._format_result_target(item)}: {item.message}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_result_target(item: SubmitResult) -> str:
+        name = f" {item.challenge_name}" if item.challenge_name else ""
+        return f"{item.track} #{item.challenge_id}{name}"
 
     def _format_multi_flag_results(
         self, flag_results: list[tuple[str, list[SubmitResult]]]
@@ -412,7 +435,7 @@ class PrivateMessageHandler:
                 f"成功 {flag_accepted}，已解决 {flag_already}，失败 {flag_failed}"
             )
             for item in results:
-                lines.append(f"  {item.track} #{item.challenge_id}: {item.message}")
+                lines.append(f"  {self._format_result_target(item)}: {item.message}")
         return "\n".join(lines)
 
     def _help_text(self) -> str:

@@ -2,6 +2,7 @@ import os
 import sqlite3
 from datetime import datetime
 from typing import Optional
+import json
 
 from .. import MODULE_NAME
 
@@ -86,12 +87,22 @@ class DataManager:
                 user_id TEXT NOT NULL,
                 track TEXT NOT NULL,
                 ids TEXT NOT NULL DEFAULT '',
+                names TEXT NOT NULL DEFAULT '{}',
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (user_id, track)
             )
             """
         )
+        self._ensure_unsolved_cache_names_column()
         self.conn.commit()
+
+    def _ensure_unsolved_cache_names_column(self):
+        self.cursor.execute("PRAGMA table_info(iscc_unsolved_cache)")
+        columns = {row["name"] for row in self.cursor.fetchall()}
+        if "names" not in columns:
+            self.cursor.execute(
+                "ALTER TABLE iscc_unsolved_cache ADD COLUMN names TEXT NOT NULL DEFAULT '{}'"
+            )
 
     def __enter__(self):
         return self
@@ -225,6 +236,27 @@ class DataManager:
             return []
         return [int(x) for x in raw.split(",") if x.strip().isdigit()]
 
+    def get_unsolved_names(self, user_id: str, track: str) -> dict[int, str]:
+        """读取未解题缓存中的题目名映射。旧缓存无名称时返回空 dict。"""
+        self.cursor.execute(
+            """
+            SELECT names FROM iscc_unsolved_cache WHERE user_id = ? AND track = ?
+            """,
+            (user_id, track),
+        )
+        row = self.cursor.fetchone()
+        if row is None:
+            return {}
+        try:
+            raw = json.loads(row["names"] or "{}")
+        except (TypeError, ValueError):
+            return {}
+        return {
+            int(cid): str(name)
+            for cid, name in raw.items()
+            if str(cid).isdigit() and name
+        }
+
     def get_unsolved_meta(self, user_id: str, track: str) -> Optional[dict]:
         self.cursor.execute(
             """
@@ -236,18 +268,29 @@ class DataManager:
         row = self.cursor.fetchone()
         return dict(row) if row else None
 
-    def save_unsolved_ids(self, user_id: str, track: str, ids: list[int]):
+    def save_unsolved_ids(
+        self,
+        user_id: str,
+        track: str,
+        ids: list[int],
+        names: dict[int, str] | None = None,
+    ):
         """覆盖式保存未解题缓存。"""
         joined = ",".join(str(int(x)) for x in ids)
+        names_payload = json.dumps(
+            {str(int(cid)): str(name) for cid, name in (names or {}).items() if name},
+            ensure_ascii=False,
+        )
         self.cursor.execute(
             """
-            INSERT INTO iscc_unsolved_cache (user_id, track, ids, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO iscc_unsolved_cache (user_id, track, ids, names, updated_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(user_id, track)
             DO UPDATE SET ids = excluded.ids,
+                          names = excluded.names,
                           updated_at = excluded.updated_at
             """,
-            (user_id, track, joined, self._now_text()),
+            (user_id, track, joined, names_payload, self._now_text()),
         )
 
     def remove_unsolved_ids(self, user_id: str, track: str, removed_ids: list[int]):
@@ -260,7 +303,13 @@ class DataManager:
         remaining = [cid for cid in current if cid not in set(removed_ids)]
         if remaining == current:
             return
-        self.save_unsolved_ids(user_id, track, remaining)
+        names = self.get_unsolved_names(user_id, track)
+        self.save_unsolved_ids(
+            user_id,
+            track,
+            remaining,
+            {cid: names[cid] for cid in remaining if cid in names},
+        )
 
     # ==================== 擂台赛监控 ====================
 

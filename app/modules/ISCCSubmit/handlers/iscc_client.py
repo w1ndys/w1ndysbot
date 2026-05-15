@@ -27,6 +27,7 @@ class ChallengeContext:
     track: str
     submit_path: str
     challenge_ids: list[int]
+    challenge_names: dict[int, str] = field(default_factory=dict)
 
 
 # 赛道标签 -> (未解题提交前缀 / referer 页面)
@@ -48,6 +49,7 @@ class SubmitResult:
     challenge_id: int
     status: str
     message: str
+    challenge_name: str = ""
 
 
 @dataclass
@@ -220,13 +222,14 @@ class ISCCClient:
         self,
         flag: str,
         prefetched_ids: dict[str, list[int]] | None = None,
+        prefetched_names: dict[str, dict[int, str]] | None = None,
     ) -> list[SubmitResult]:
         """对当前所有未解题目提交单个 flag。
 
         - `prefetched_ids` 传入 `{"练武题": [...], "擂台题": [...]}` 时，直接使用该列表，
           不再实时拉取。缓存未命中的赛道会回退到实时拉取（保持旧逻辑兼容）。
         """
-        grouped = await self.submit_flags_to_unsolved([flag], prefetched_ids)
+        grouped = await self.submit_flags_to_unsolved([flag], prefetched_ids, prefetched_names)
         # 保持老调用方签名：返回单个 flag 的结果列表。
         return grouped[0][1] if grouped else []
 
@@ -234,6 +237,7 @@ class ISCCClient:
         self,
         flags: list[str],
         prefetched_ids: dict[str, list[int]] | None = None,
+        prefetched_names: dict[str, dict[int, str]] | None = None,
     ) -> list[tuple[str, list[SubmitResult]]]:
         """对当前所有未解题目并发提交一批 flag。
 
@@ -243,6 +247,7 @@ class ISCCClient:
         - 返回值保持与 flags 同序：`[(flag, [SubmitResult, ...]), ...]`。
         """
         prefetched_ids = prefetched_ids or {}
+        prefetched_names = prefetched_names or {}
         if not flags:
             return []
 
@@ -254,7 +259,12 @@ class ISCCClient:
                 ids = prefetched_ids.get(track)
                 if ids is not None:
                     contexts.append(
-                        ChallengeContext(track, TRACK_SUBMIT_PATH[track], sorted(set(ids)))
+                        ChallengeContext(
+                            track,
+                            TRACK_SUBMIT_PATH[track],
+                            sorted(set(ids)),
+                            prefetched_names.get(track, {}),
+                        )
                     )
                     continue
                 try:
@@ -293,15 +303,44 @@ class ISCCClient:
                 ARENA_TRACK: list(arena_ctx.challenge_ids),
             }
 
+    async def fetch_unsolved_challenges(self) -> dict[str, dict[int, str]]:
+        """拉取当前账号在两个赛道上的未解题 id 与题目名。"""
+        async with self._operation_session():
+            regular_ctx, arena_ctx = await asyncio.gather(
+                self._regular_context(), self._arena_context()
+            )
+            return {
+                REGULAR_TRACK: {
+                    cid: regular_ctx.challenge_names.get(cid, "")
+                    for cid in regular_ctx.challenge_ids
+                },
+                ARENA_TRACK: {
+                    cid: arena_ctx.challenge_names.get(cid, "")
+                    for cid in arena_ctx.challenge_ids
+                },
+            }
+
     async def _regular_context(self) -> ChallengeContext:
-        challenge_ids, solved_ids = await asyncio.gather(
-            self._regular_challenge_ids(), self._regular_solved_ids()
+        challenges, solved_ids = await asyncio.gather(
+            self._regular_challenges(), self._regular_solved_ids()
         )
-        return ChallengeContext(REGULAR_TRACK, TRACK_SUBMIT_PATH[REGULAR_TRACK], sorted(challenge_ids - solved_ids))
+        unsolved_ids = sorted(set(challenges) - solved_ids)
+        return ChallengeContext(
+            REGULAR_TRACK,
+            TRACK_SUBMIT_PATH[REGULAR_TRACK],
+            unsolved_ids,
+            {cid: challenges.get(cid, "") for cid in unsolved_ids},
+        )
 
     async def _arena_context(self) -> ChallengeContext:
-        challenge_ids, solved_ids = await asyncio.gather(self._arena_challenge_ids(), self._arena_solved_ids())
-        return ChallengeContext(ARENA_TRACK, TRACK_SUBMIT_PATH[ARENA_TRACK], sorted(challenge_ids - solved_ids))
+        challenges, solved_ids = await asyncio.gather(self._arena_challenges(), self._arena_solved_ids())
+        unsolved_ids = sorted(set(challenges) - solved_ids)
+        return ChallengeContext(
+            ARENA_TRACK,
+            TRACK_SUBMIT_PATH[ARENA_TRACK],
+            unsolved_ids,
+            {cid: challenges.get(cid, "") for cid in unsolved_ids},
+        )
 
     async def _regular_solved_ids(self) -> set[int]:
         """当前登录账号已解的练武题 id，走 session 维度的 /solves 接口。"""
@@ -309,19 +348,38 @@ class ISCCClient:
         return {int(item["chalid"]) for item in data.get("solves", []) if str(item.get("chalid", "")).isdigit()}
 
     async def _regular_challenge_ids(self) -> set[int]:
+        return set(await self._regular_challenges())
+
+    async def _regular_challenges(self) -> dict[int, str]:
         data = await self._request_json("GET", "/chals", referer=f"{self.base_url}/challenges")
-        ids: set[int] = set()
+        challenges: dict[int, str] = {}
         # /chals 返回结构常见为 {"game": [...]} 或 {"challenges": [...]}，做兼容
         for key in ("game", "challenges"):
             for item in data.get(key, []) or []:
                 cid = item.get("id") if isinstance(item, dict) else None
                 if str(cid).isdigit():
-                    ids.add(int(cid))
-        return ids
+                    challenges[int(cid)] = self._extract_challenge_name(item)
+        return challenges
 
     async def _arena_challenge_ids(self) -> set[int]:
+        return set(await self._arena_challenges())
+
+    async def _arena_challenges(self) -> dict[int, str]:
         data = await self._request_json("GET", "/arenas", referer=f"{self.base_url}/arena")
-        return {int(item["id"]) for item in data.get("game", []) if str(item.get("id", "")).isdigit()}
+        challenges: dict[int, str] = {}
+        for item in data.get("game", []) or []:
+            cid = item.get("id") if isinstance(item, dict) else None
+            if str(cid).isdigit():
+                challenges[int(cid)] = self._extract_challenge_name(item)
+        return challenges
+
+    @staticmethod
+    def _extract_challenge_name(item: dict) -> str:
+        for key in ("name", "title", "chal_name", "challenge", "value"):
+            value = item.get(key)
+            if value:
+                return str(value).strip()
+        return ""
 
     async def _arena_solved_ids(self) -> set[int]:
         data = await self._request_json("GET", "/arenasolves", referer=f"{self.base_url}/arena")
@@ -339,9 +397,21 @@ class ISCCClient:
                 ajax=True,
             )
             status = text.strip()
-            return SubmitResult(context.track, challenge_id, status, STATUS_TEXT.get(status, f"未知返回：{status}"))
+            return SubmitResult(
+                context.track,
+                challenge_id,
+                status,
+                STATUS_TEXT.get(status, f"未知返回：{status}"),
+                context.challenge_names.get(challenge_id, ""),
+            )
         except Exception as e:
-            return SubmitResult(context.track, challenge_id, "error", f"提交异常：{e}")
+            return SubmitResult(
+                context.track,
+                challenge_id,
+                "error",
+                f"提交异常：{e}",
+                context.challenge_names.get(challenge_id, ""),
+            )
 
     async def _get_nonce_for_track(self, track: str) -> str:
         path = TRACK_REFERER_PATH.get(track, "/challenges")
